@@ -1,0 +1,16 @@
+{
+  "name": "frame",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Live event face matching. Guests find their photographs by taking one selfie.",
+  "workspaces": [
+    "desktop",
+    "web"
+  ],
+  "scripts": {
+    "studio": "npm run dev --workspace desktop",
+    "guest": "npm run dev --workspace web",
+    "typecheck": "npm run typecheck --workspace desktop && npm run typecheck --workspace web",
+    "build": "npm run build --workspace desktop && npm run build --workspace web"
+  }
+}

@@ -1,0 +1,50 @@
+Copyright (c) 2026 the Frame authors. All rights reserved.
+
+This software is source-available, not open source. It is published so that it
+can be read, studied and evaluated. It is not published for anyone else to run
+as a service or sell.
+
+PERMITTED
+
+  You may view, read and study this source code.
+
+  You may clone it and run it locally for the purpose of evaluating it, or to
+  learn from it.
+
+  You may quote short extracts with attribution, for example in a review, an
+  article or teaching material.
+
+NOT PERMITTED WITHOUT WRITTEN PERMISSION FROM THE COPYRIGHT HOLDER
+
+  Any commercial use. This includes running the software, or any part of it,
+  as or within a product or service that is sold, licensed, monetised, or
+  offered to third parties whether paid or unpaid.
+
+  Redistribution of the source code or of any derivative work.
+
+  Removing or altering this notice.
+
+The copyright holder reserves the exclusive right to commercialise this
+software.
+
+THIRD-PARTY COMPONENTS
+
+  This notice covers the code in this repository only.
+
+  The face detection and recognition models it downloads at setup time (YuNet
+  and SFace, from OpenCV Zoo) are Apache 2.0 licensed and are not included in
+  this repository. Third-party dependencies listed in requirements.txt and
+  package.json remain under their own licences.
+
+NO WARRANTY
+
+  THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+  IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+  FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+  AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+  LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+  OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+  SOFTWARE.
+
+This software processes biometric data. Anyone evaluating it remains
+responsible for their own compliance with applicable data protection law.

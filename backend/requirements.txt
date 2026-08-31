@@ -1,0 +1,29 @@
+# Pinned with >= rather than == so a fresh install on a new machine is not
+# fighting the resolver, but the versions named are the ones this was built and
+# tested against. Pin exactly before deploying if you want reproducible builds.
+
+fastapi>=0.115
+uvicorn[standard]>=0.31
+sqlalchemy>=2.0.35
+alembic>=1.13
+psycopg[binary]>=3.2
+pgvector>=0.3.5
+pydantic-settings>=2.5
+python-multipart>=0.0.12
+
+# Face detection and embedding. Both models are Apache 2.0 from OpenCV Zoo.
+opencv-python>=4.10
+numpy>=2.1
+
+# Storage and Razorpay. Razorpay is called over plain HTTP with requests, so
+# there is no payment SDK here on purpose: the whole integration is one POST
+# and two HMAC checks, and those are worth being able to read.
+requests>=2.32
+boto3>=1.35
+
+# Auth. Argon2id for passwords, PyJWT for access tokens.
+argon2-cffi>=23.1
+PyJWT>=2.9
+
+# Only needed to run scripts/prove_api_flow.py, which drives the API in-process.
+httpx>=0.27

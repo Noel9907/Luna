@@ -1,0 +1,1417 @@
+openapi: 3.1.0
+
+info:
+  title: Event Face Matching API
+  version: 1.0.0
+  description: |
+    Phase 1 contract — single studio, no billing. Multi-tenant structures are
+    present but only one studio row exists.
+
+    ## Who owns what
+    Backend (routes, DB, worker) is implemented by the studio owner.
+    Frontend (three React apps) is implemented against this spec via a mock server.
+    Neither side blocks the other. When the real server is live, only the base URL changes.
+
+    ## Two separate auth contexts — do not mix them
+    - **Staff** (studio owners, photographers, platform admins) use
+      `Authorization: Bearer <access_token>`.
+    - **Guests** have no account. They use `X-Guest-Session: <session_token>`,
+      scoped to exactly one event, and can reach only the `/g/*` routes.
+
+    Keeping these in different headers is deliberate: it makes it structurally
+    hard to accidentally accept a guest token on a staff route.
+
+    ## photos.status state machine
+    ```
+    pending ──► uploaded ──► processing ──► done
+                                 │
+                                 └────────► failed ──► (retry) ──► processing
+    ```
+    - `pending`    row created, presigned URL issued, bytes not yet confirmed
+    - `uploaded`   client confirmed the PUT succeeded; job enqueued
+    - `processing` a worker has claimed the job
+    - `done`       faces extracted, embedded, stored, matched against guests
+    - `failed`     gave up after 5 attempts; `error_code` explains why
+
+    ## events.status state machine
+    ```
+    draft ──► active ──► ended
+    ```
+    - `draft`  created but not paid for. Uploads are rejected.
+    - `active` payable work allowed. In phase 1 events are created active.
+    - `ended`  read-only. Retention clock starts from `ended_at`.
+
+    ## Pagination
+    Cursor-based everywhere. Responses carry `next_cursor`; pass it back as
+    `cursor`. A null `next_cursor` means the end. Never use offset pagination
+    here — new photos arrive mid-scroll and offsets would duplicate or skip rows.
+
+servers:
+  - url: https://api.example.com/v1
+    description: production
+  - url: http://localhost:8000/v1
+    description: local development
+
+tags:
+  - name: auth
+  - name: events
+  - name: uploads
+  - name: photos
+  - name: guest
+  - name: members
+  - name: billing
+
+security:
+  - staffAuth: []
+
+paths:
+
+  # ───────────────────────────── auth ─────────────────────────────
+
+  /auth/login:
+    post:
+      tags: [auth]
+      summary: Exchange an identifier and password for tokens
+      description: |
+        Accounts are created by hand, never by self-signup. The platform creates
+        a studio and its owner; the owner creates their photographers. Credentials
+        are delivered over WhatsApp.
+
+        `identifier` accepts **either a username or an email address**. Many small
+        Indian studios do not use email, so requiring one would exclude real
+        customers, but studios that do have one should be able to use it. Match
+        on username first, then on email.
+
+        Recovery for an account with no email is a manual reset from the admin
+        panel, verified against the phone number on the studio record.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [identifier, password]
+              properties:
+                identifier:
+                  type: string
+                  minLength: 3
+                  maxLength: 120
+                  description: Username or email address.
+                password: { type: string, minLength: 8 }
+      responses:
+        '200':
+          description: Authenticated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TokenPair' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /auth/refresh:
+    post:
+      tags: [auth]
+      summary: Exchange a refresh token for a new access token
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refresh_token]
+              properties:
+                refresh_token: { type: string }
+      responses:
+        '200':
+          description: Refreshed
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TokenPair' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /auth/password:
+    post:
+      tags: [auth]
+      summary: Change the signed-in user's password
+      description: |
+        Also clears `must_change_password`. Studios are created by the platform
+        with an initial password, and this is how that gets replaced on first
+        sign-in.
+
+        All other refresh tokens for this user are revoked, so a leaked initial
+        password stops working the moment the real one is set.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [current_password, new_password]
+              properties:
+                current_password: { type: string }
+                new_password: { type: string, minLength: 10 }
+      responses:
+        '200':
+          description: Changed. Returns a fresh token pair.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TokenPair' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '422':
+          description: New password rejected
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example:
+                error:
+                  code: PASSWORD_TOO_WEAK
+                  message: Use at least 10 characters.
+
+  /me:
+    get:
+      tags: [auth]
+      summary: Current user, their studio, and their role
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Me' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  # ───────────────────────────── events ─────────────────────────────
+
+  /events:
+    get:
+      tags: [events]
+      summary: List events for the caller's studio
+      parameters:
+        - name: status
+          in: query
+          schema: { type: string, enum: [draft, active, ended] }
+        - { $ref: '#/components/parameters/Cursor' }
+        - { $ref: '#/components/parameters/Limit' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next_cursor]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Event' }
+                  next_cursor: { type: [string, 'null'] }
+
+    post:
+      tags: [events]
+      summary: Create an event
+      description: |
+        In phase 1 the event is created directly as `active`.
+        In phase 2 it is created as `draft` and only a Razorpay
+        `payment.captured` webhook may promote it to `active`.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, event_date, tier_code]
+              properties:
+                name: { type: string, minLength: 1, maxLength: 200 }
+                event_date: { type: string, format: date }
+                tier_code: { type: string, enum: [basic, pro, premium] }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Event' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /events/{event_id}:
+    parameters:
+      - { $ref: '#/components/parameters/EventId' }
+    get:
+      tags: [events]
+      summary: Fetch one event
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Event' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /events/{event_id}/stats:
+    parameters:
+      - { $ref: '#/components/parameters/EventId' }
+    get:
+      tags: [events]
+      summary: Live processing counters
+      description: |
+        Polled by the photographer's app every ~5s while uploading.
+        Keep this query cheap — it is the most frequently hit endpoint
+        in the system during an event.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EventStats' }
+
+  # ───────────────────────────── uploads ─────────────────────────────
+
+  /events/{event_id}/uploads:
+    parameters:
+      - { $ref: '#/components/parameters/EventId' }
+    post:
+      tags: [uploads]
+      summary: Request presigned upload URLs for a batch of photos
+      description: |
+        The client describes the files it intends to upload; the server
+        authorizes, generates the object keys itself, and returns one
+        presigned PUT URL per file.
+
+        **The client never chooses the object key.** If it did, a caller could
+        overwrite another event's photos by supplying a crafted key.
+
+        The signature constrains bucket, key, method, `content_type` and
+        `max_bytes`, and expires at `expires_at` (~10 minutes).
+
+        **Presign in rolling chunks, not all at once.** A photographer may drop
+        600 files in a single round. Those live in a client-side queue with
+        4-6 uploads in flight, which can take 20+ minutes on venue wifi. If all
+        600 URLs were minted upfront, the tail would expire before the queue
+        reached it. The uploader therefore calls this endpoint repeatedly for
+        the next slice of its queue, keeping every URL under a minute old when
+        it is used.
+
+        Server cap is 250 files per call. The uploader hides this entirely;
+        photographers drop as many files as they like.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [files]
+              properties:
+                files:
+                  type: array
+                  minItems: 1
+                  maxItems: 250
+                  items:
+                    type: object
+                    required: [client_ref, content_type, size_bytes]
+                    properties:
+                      client_ref:
+                        type: string
+                        description: |
+                          Client-generated id echoed back in the response so the
+                          uploader can match URLs to its own queue entries.
+                          Never used as, or incorporated into, the object key.
+                        maxLength: 100
+                      content_type: { type: string, enum: [image/jpeg, image/png, image/webp] }
+                      size_bytes: { type: integer, minimum: 1, maximum: 26214400 }
+      responses:
+        '201':
+          description: URLs issued
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [uploads]
+                properties:
+                  uploads:
+                    type: array
+                    items:
+                      type: object
+                      required: [client_ref, photo_id, upload_url, expires_at]
+                      properties:
+                        client_ref: { type: string }
+                        photo_id: { type: string, format: uuid }
+                        upload_url: { type: string, format: uri }
+                        expires_at: { type: string, format: date-time }
+        '403':
+          description: Event is not active, so uploads are refused
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example:
+                error:
+                  code: EVENT_NOT_ACTIVE
+                  message: This event has not been activated.
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /events/{event_id}/photos/complete:
+    parameters:
+      - { $ref: '#/components/parameters/EventId' }
+    post:
+      tags: [uploads]
+      summary: Confirm which uploads succeeded, and enqueue them
+      description: |
+        Called after the PUTs finish. Report only the photos whose upload
+        actually succeeded — failed ones stay `pending` and are swept up later.
+
+        Moves each photo `pending → uploaded` and inserts a processing job in
+        the **same transaction**, so a photo can never be marked uploaded
+        without a job to process it.
+
+        Idempotent: re-sending a `photo_id` already `uploaded` or beyond is a
+        no-op, not an error. The uploader retries on flaky networks and must be
+        able to do so safely.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [photo_ids]
+              properties:
+                photo_ids:
+                  type: array
+                  minItems: 1
+                  maxItems: 250
+                  items: { type: string, format: uuid }
+      responses:
+        '200':
+          description: Accepted
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [enqueued, skipped]
+                properties:
+                  enqueued: { type: integer }
+                  skipped:
+                    type: integer
+                    description: Already past `pending`; ignored.
+
+  /events/{event_id}/checkout:
+    parameters:
+      - { $ref: '#/components/parameters/EventId' }
+    post:
+      tags: [billing]
+      summary: Create a Razorpay order for a draft event
+      description: |
+        Returns everything the client needs to open Razorpay Checkout. Safe to
+        call again for the same draft event: return the existing open order
+        rather than creating a second one, or a studio that closed the modal and
+        came back would be charged twice.
+
+        `key_id` is the **public** Razorpay key. The secret never leaves the
+        server, and the client never computes a signature.
+      responses:
+        '201':
+          description: Order ready
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Checkout' }
+        '409':
+          description: Event is already active
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /events/{event_id}/checkout/verify:
+    parameters:
+      - { $ref: '#/components/parameters/EventId' }
+    post:
+      tags: [billing]
+      summary: Report what Razorpay Checkout handed back
+      description: |
+        **This does not activate the event.** It verifies the checkout signature
+        so the app can show an optimistic "payment received" state a second or
+        two earlier than the webhook would allow.
+
+        Activation happens only on `payment.captured`. Browsers get closed and
+        phones lose signal on the confirmation screen, so anything that depends
+        on the client coming back will eventually strand a studio who has paid
+        and cannot upload.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [razorpay_order_id, razorpay_payment_id, razorpay_signature]
+              properties:
+                razorpay_order_id: { type: string }
+                razorpay_payment_id: { type: string }
+                razorpay_signature: { type: string }
+      responses:
+        '200':
+          description: Signature checked
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [verified]
+                properties:
+                  verified: { type: boolean }
+        '422':
+          description: Signature did not match
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /payments:
+    get:
+      tags: [billing]
+      summary: This studio's payment history
+      parameters:
+        - { $ref: '#/components/parameters/Cursor' }
+        - { $ref: '#/components/parameters/Limit' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next_cursor]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Payment' }
+                  next_cursor: { type: [string, 'null'] }
+
+  /tiers:
+    get:
+      tags: [billing]
+      summary: What an event costs and what each price includes
+      description: |
+        Served from the server so prices can change without shipping a new
+        desktop build. What a studio actually bought is snapshotted onto the
+        event, so changing these never rewrites a past event.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Tier' }
+
+  # ───────────────────────────── photos ─────────────────────────────
+
+  /events/{event_id}/photos:
+    parameters:
+      - { $ref: '#/components/parameters/EventId' }
+    get:
+      tags: [photos]
+      summary: Photos in an event, for the photographer's view
+      parameters:
+        - name: status
+          in: query
+          schema: { type: string, enum: [pending, uploaded, processing, done, failed] }
+        - { $ref: '#/components/parameters/Cursor' }
+        - { $ref: '#/components/parameters/Limit' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next_cursor]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/Photo' }
+                  next_cursor: { type: [string, 'null'] }
+
+  /photos/{photo_id}/retry:
+    parameters:
+      - name: photo_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      tags: [photos]
+      summary: Re-enqueue a failed photo
+      description: Resets attempts to 0 and returns the photo to `uploaded`.
+      responses:
+        '200':
+          description: Re-enqueued
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Photo' }
+        '409':
+          description: Photo is not in `failed` state
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  # ───────────────────────────── guest ─────────────────────────────
+
+  /g/{qr_token}:
+    parameters:
+      - name: qr_token
+        in: path
+        required: true
+        schema: { type: string }
+    get:
+      tags: [guest]
+      summary: Public event info behind a QR code
+      description: |
+        The first request a guest makes. Returns only what is safe to show an
+        unauthenticated stranger holding the token: event name, date, and the
+        branding to render. No photos, no guest list, no studio internals.
+      security: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/GuestEventInfo' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /g/{qr_token}/session:
+    parameters:
+      - name: qr_token
+        in: path
+        required: true
+        schema: { type: string }
+    post:
+      tags: [guest]
+      summary: Record consent and open a guest session
+      description: |
+        Must be called before the camera is opened. `consented` must be `true` —
+        there is no path to a session without explicit consent, because the
+        selfie that follows is biometric data under the DPDP Act.
+
+        The returned `session_token` goes in `X-Guest-Session` on every
+        subsequent `/g/*` call.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [consented]
+              properties:
+                consented:
+                  type: boolean
+                  const: true
+      responses:
+        '201':
+          description: Session opened
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [session_token, expires_at, face_retention_days, face_deletion_date]
+                properties:
+                  session_token: { type: string }
+                  expires_at: { type: [string, 'null'], format: date-time }
+                  face_retention_days:
+                    type: integer
+                    description: |
+                      Snapshotted onto this session at the moment of consent, from
+                      the event, which snapshotted it from the studio's negotiated
+                      setting. Never a live lookup: what a guest agreed to cannot
+                      be changed afterwards by editing a studio setting.
+
+                      Not a tier feature and not purchasable. Capped platform-wide
+                      by MAX_FACE_RETENTION_DAYS.
+                  face_deletion_date:
+                    type: string
+                    format: date
+                    description: |
+                      The actual calendar date this guest's selfie is deleted. The
+                      consent screen shows this rather than a duration, so the
+                      promise is specific and checkable rather than a general claim
+                      about policy.
+
+  /g/selfie:
+    post:
+      tags: [guest]
+      summary: Register the guest's face and run the initial search
+      description: |
+        Runs **once** per guest. Detects, quality-checks, embeds and stores the
+        selfie, then searches every face indexed so far for this event and
+        writes the matches.
+
+        From here on, matching happens in the worker as new photos arrive. The
+        gallery never calls this again.
+
+        Expects a JPEG under 2MB, already compressed client-side.
+      security:
+        - guestAuth: []
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [selfie]
+              properties:
+                selfie: { type: string, format: binary }
+      responses:
+        '200':
+          description: Face registered
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [matched_count]
+                properties:
+                  matched_count:
+                    type: integer
+                    description: Photos matched from those already indexed.
+        '422':
+          description: |
+            The selfie was unusable. `code` tells the frontend which specific
+            retake instruction to show — these are the most common failure in
+            the whole product, so each needs its own human message.
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              examples:
+                no_face:
+                  value: { error: { code: NO_FACE_DETECTED, message: We could not find a face in that photo. } }
+                multiple_faces:
+                  value: { error: { code: MULTIPLE_FACES, message: Please take a selfie with just yourself in frame. } }
+                too_small:
+                  value: { error: { code: FACE_TOO_SMALL, message: Please hold the camera closer. } }
+                too_blurry:
+                  value: { error: { code: FACE_TOO_BLURRY, message: That photo was too blurry. Hold still and try again. } }
+
+  /g/photos:
+    get:
+      tags: [guest]
+      summary: The guest's matched photos
+      description: |
+        Polled roughly every 20 seconds while the event runs.
+
+        This is a plain database read — no model inference, no external API,
+        no per-call cost. That is the whole reason the architecture works.
+
+        Pass `after` (the previous `latest_cursor`) to fetch only newly matched
+        photos. The frontend uses this to show "8 new photos" rather than
+        reshuffling the grid under the guest's thumb.
+      security:
+        - guestAuth: []
+      parameters:
+        - name: after
+          in: query
+          schema: { type: string }
+          description: Return only matches newer than this cursor.
+        - { $ref: '#/components/parameters/Cursor' }
+        - { $ref: '#/components/parameters/Limit' }
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next_cursor, latest_cursor, total_count]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/GuestPhoto' }
+                  next_cursor: { type: [string, 'null'] }
+                  latest_cursor:
+                    type: string
+                    description: Pass as `after` on the next poll.
+                  total_count: { type: integer }
+
+  /g/session:
+    delete:
+      tags: [guest]
+      summary: Delete the guest's face data and matches
+      description: |
+        The DPDP deletion path. Removes the embedding, the session and all
+        match rows immediately — not on a schedule.
+
+        Does **not** delete the studio's photos; the guest has no rights over
+        those. It only removes the link between this person and them.
+      security:
+        - guestAuth: []
+      responses:
+        '204':
+          description: Deleted
+
+  # ───────────────────────────── members ─────────────────────────────
+
+  /studio/members:
+    get:
+      tags: [members]
+      summary: Everyone who belongs to the caller's studio
+      description: |
+        Owners and photographers alike, including invitations that have not been
+        accepted yet. Scoped to the caller's studio by row-level security, so
+        there is no studio id in the path.
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/StudioMember' }
+
+    post:
+      tags: [members]
+      summary: Create an account for a photographer
+      description: |
+        No email is sent and no invitation is accepted. The server generates an
+        initial password and returns it **once**; the owner passes it on over
+        WhatsApp. Same pattern the platform uses to create a studio.
+
+        `initial_password` appears in this response and nowhere else, ever. The
+        account is created with `must_change_password` set, so the photographer
+        replaces it the first time they sign in.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username, role]
+              properties:
+                username:
+                  type: string
+                  minLength: 3
+                  maxLength: 40
+                  pattern: "^[a-z0-9._-]+$"
+                name: { type: string, maxLength: 120 }
+                email:
+                  type: string
+                  format: email
+                  description: Optional. Enables self-service reset later.
+                role: { type: string, enum: [photographer, owner] }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/StudioMember'
+                  - type: object
+                    required: [initial_password]
+                    properties:
+                      initial_password:
+                        type: string
+                        description: Shown once. Never retrievable again.
+        '409':
+          description: That username is taken
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '403':
+          description: Caller is not an owner
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+        '422': { $ref: '#/components/responses/ValidationError' }
+
+  /studio/members/{user_id}:
+    parameters:
+      - name: user_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    delete:
+      tags: [members]
+      summary: Remove someone from the studio
+      description: |
+        Revokes access. Photographs they already uploaded stay with the event,
+        because they belong to the studio and not to the person who sent them.
+
+        The last remaining owner cannot be removed, otherwise the studio becomes
+        unreachable.
+      responses:
+        '204':
+          description: Removed
+        '409':
+          description: Would leave the studio with no owner
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+              example:
+                error:
+                  code: LAST_OWNER
+                  message: A studio must always have at least one owner.
+
+  # ───────────────────────────── lifecycle ─────────────────────────────
+
+  /auth/logout:
+    post:
+      tags: [auth]
+      summary: Revoke a refresh token family
+      description: |
+        Revokes the whole family the token belongs to, so every device in that
+        chain is signed out. Never reports whether the token existed: an
+        endpoint that distinguishes them is a way to test whether a stolen
+        token is still live.
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refresh_token]
+              properties:
+                refresh_token: { type: string }
+      responses:
+        '204': { description: Signed out }
+
+  /events/{event_id}/end:
+    parameters:
+      - { $ref: '#/components/parameters/EventId' }
+    post:
+      tags: [events]
+      summary: Close an event to new guests
+      description: |
+        Stops new selfies. Photographs already indexed stay reachable for the
+        retention window the studio bought.
+
+        Also starts the clock the retention purge measures from, which is why
+        this is an explicit action rather than something inferred from the
+        event date.
+      responses:
+        '200':
+          description: Ended
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Event' }
+        '409':
+          description: The event was never activated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /studio/members/{user_id}/reset-password:
+    parameters:
+      - name: user_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    post:
+      tags: [members]
+      summary: Issue a new initial password for a photographer
+      description: |
+        Owner only. Returns the new password once and revokes every refresh
+        token that person holds. Revocation is the point: resetting a password
+        because somebody else has it, while leaving their sessions alive,
+        changes nothing.
+      responses:
+        '200':
+          description: Reset
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/StudioMember'
+                  - type: object
+                    required: [initial_password]
+                    properties:
+                      initial_password: { type: string }
+
+  # ───────────────────────────── webhooks ─────────────────────────────
+
+  /webhooks/razorpay:
+    post:
+      tags: [billing]
+      summary: Razorpay payment callback
+      description: |
+        **The only thing that activates an event.**
+
+        The signature is an HMAC-SHA256 of the RAW request body with the webhook
+        secret, verified before the body is parsed. Re-serialising the parsed
+        JSON and hashing that is the classic way to break this.
+
+        Deliveries are recorded under a unique key BEFORE being acted on, so a
+        redelivery is dropped rather than activating an event or crediting a
+        studio twice. Razorpay retries for up to 24 hours and does not promise
+        exactly-once delivery.
+
+        Returns 400, not 401, on a bad signature: Razorpay retries 5xx, and a
+        signature that does not match will never start matching.
+      security: []
+      parameters:
+        - name: X-Razorpay-Signature
+          in: header
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { type: object }
+      responses:
+        '200': { description: Accepted, or recognised as a duplicate }
+        '400':
+          description: Signature or payload rejected
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  # ───────────────────────────── platform admin ─────────────────────────────
+  # Every route below is for platform administrators only, which is two people.
+  # They are served on the database owner connection because an admin is not a
+  # tenant: seeing across studios is the entire job.
+
+  /admin/studios:
+    get:
+      tags: [admin]
+      summary: Every studio, with event and photo counts
+      responses:
+        '200': { description: OK }
+    post:
+      tags: [admin]
+      summary: Create a studio and its first owner
+      description: |
+        Both in one step, because a studio with no owner is unreachable. The
+        owner's password is returned once and travels over WhatsApp.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, owner_username]
+              properties:
+                name: { type: string }
+                phone: { type: [string, 'null'] }
+                owner_username: { type: string, pattern: "^[a-z0-9._-]+$" }
+                owner_name: { type: string }
+                owner_email: { type: [string, 'null'] }
+                face_retention_days:
+                  type: integer
+                  description: |
+                    The negotiated biometric retention for this studio. Capped by
+                    MAX_FACE_RETENTION_DAYS, which lives in configuration and
+                    needs a restart to change.
+      responses:
+        '201': { description: Created, with the owner's initial password }
+        '409': { description: That username is taken }
+        '422': { description: Retention outside the permitted range }
+
+  /admin/studios/{studio_id}:
+    parameters:
+      - name: studio_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+    patch:
+      tags: [admin]
+      summary: Update a studio, including its face retention
+      description: |
+        Changing retention affects events created from now on. Existing events
+        keep the value snapshotted onto them, and guests keep the value
+        snapshotted onto their session at consent.
+      responses:
+        '200': { description: Updated }
+
+  /admin/studios/{studio_id}/reset-owner-password:
+    parameters:
+      - name: studio_id
+        in: path
+        required: true
+        schema: { type: string, format: uuid }
+      - name: username
+        in: query
+        required: true
+        schema: { type: string }
+    post:
+      tags: [admin]
+      summary: Manual password recovery
+      description: |
+        The recovery path for a studio with no email address, verified out of
+        band against the phone number on the studio record. For a studio that
+        has no email this is not a weaker option, it is the only one.
+      responses:
+        '200': { description: Reset, with a new initial password }
+
+  /admin/events:
+    get:
+      tags: [admin]
+      summary: Every event across all studios, with purge state
+      responses:
+        '200': { description: OK }
+
+  /admin/events/{event_id}/purge-faces:
+    parameters:
+      - { $ref: '#/components/parameters/EventId' }
+    post:
+      tags: [admin]
+      summary: Delete an event's biometric data immediately
+      description: |
+        Both the guests' selfie embeddings and the embeddings extracted from the
+        studio's photographs, since both are biometric.
+
+        Galleries keep working afterwards, because `guest_matches` holds no
+        biometric data and is untouched. What stops is new guests joining:
+        there is nothing left to match a fresh selfie against.
+
+        Recorded in the audit log with who asked for it.
+      responses:
+        '200': { description: Purged }
+
+  /admin/retention/run:
+    post:
+      tags: [admin]
+      summary: Run a retention pass now
+      responses:
+        '200': { description: Counts of what was deleted }
+
+  /admin/stats:
+    get:
+      tags: [admin]
+      summary: Platform totals and captured revenue
+      responses:
+        '200': { description: OK }
+
+  /admin/audit:
+    get:
+      tags: [admin]
+      summary: The audit trail
+      description: |
+        Administrative acts only, not an activity feed: accounts created,
+        passwords reset, retention changed, faces purged, events activated.
+      responses:
+        '200': { description: OK }
+
+  # ───────────────────────────── ops ─────────────────────────────
+
+  /health:
+    get:
+      tags: [ops]
+      summary: Liveness, and the two settings that are wrong most often
+      security: []
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok: { type: boolean }
+                  env: { type: string }
+                  storage: { type: string }
+                  row_level_security:
+                    type: boolean
+                    description: |
+                      False means the API is connected as the database owner and
+                      tenant isolation is NOT in effect. Check this after every
+                      deploy.
+
+  /health/deep:
+    get:
+      tags: [ops]
+      summary: Queue depth and the age of the oldest unprocessed job
+      description: |
+        `oldest_pending_seconds` is the most useful number in the system. When
+        it climbs, guests at a wedding are watching a gallery that has stopped
+        filling, and it is visible here minutes before anybody phones about it.
+        Alert above 300.
+      security: []
+      responses:
+        '200': { description: OK }
+
+
+components:
+
+  securitySchemes:
+    staffAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+      description: Studio owners, photographers and platform admins.
+    guestAuth:
+      type: apiKey
+      in: header
+      name: X-Guest-Session
+      description: Opaque session token, scoped to one event, valid for `/g/*` only.
+
+  parameters:
+    EventId:
+      name: event_id
+      in: path
+      required: true
+      schema: { type: string, format: uuid }
+    Cursor:
+      name: cursor
+      in: query
+      schema: { type: string }
+    Limit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 100, default: 50 }
+
+  responses:
+    Unauthorized:
+      description: Missing or invalid credentials
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: |
+        Not found — also returned when the resource exists but belongs to
+        another studio. Never distinguish these two cases; doing so leaks
+        the existence of other tenants' data.
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    ValidationError:
+      description: Request body failed validation
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+
+  schemas:
+
+    Error:
+      type: object
+      required: [error]
+      properties:
+        error:
+          type: object
+          required: [code, message]
+          properties:
+            code:
+              type: string
+              description: Stable machine-readable identifier. Frontend switches on this, never on `message`.
+            message:
+              type: string
+              description: Human-readable text, safe to show a user.
+            details:
+              type: object
+              additionalProperties: true
+
+    TokenPair:
+      type: object
+      required: [access_token, refresh_token, expires_in]
+      properties:
+        access_token: { type: string }
+        refresh_token: { type: string }
+        expires_in: { type: integer, description: Seconds until the access token expires. }
+
+    Me:
+      type: object
+      required: [user_id, username, studio, role, must_change_password]
+      properties:
+        user_id: { type: string, format: uuid }
+        username: { type: string }
+        email:
+          type: [string, 'null']
+          description: Optional. Present only for accounts that supplied one.
+        name: { type: [string, 'null'] }
+        role: { type: string, enum: [owner, photographer, platform_admin] }
+        must_change_password:
+          type: boolean
+          description: |
+            True while the account still carries the password whoever created it
+            chose. The app blocks everything else until it is changed, so nobody
+            keeps working knowledge of someone else's credentials.
+        studio:
+          type: object
+          required: [id, name]
+          properties:
+            id: { type: string, format: uuid }
+            name: { type: string }
+            phone:
+              type: [string, 'null']
+              description: |
+                Used to confirm who is calling during a manual password reset,
+                and to reach a studio on WhatsApp. Not used for OTP.
+            brand_color: { type: [string, 'null'] }
+            brand_logo_url: { type: [string, 'null'] }
+
+    Event:
+      type: object
+      required: [id, name, event_date, status, tier_code, branding_mode, photo_retention_days, qr_url, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        name: { type: string }
+        event_date: { type: string, format: date }
+        status: { type: string, enum: [draft, active, ended] }
+        tier_code:
+          type: string
+          enum: [basic, pro, premium]
+          description: Snapshot of what was purchased, not a live lookup.
+        branding_mode:
+          type: string
+          enum: [platform, studio]
+          description: Snapshot. Drives which branding the guest gallery renders.
+        photo_retention_days:
+          type: integer
+          description: Snapshot. 30, 90 or 180 depending on tier at purchase.
+        face_retention_days:
+          type: integer
+          description: |
+            Snapshot, taken from the studio's negotiated setting when the event
+            was created. Changing that setting later does not affect this event.
+        activated_at:
+          type: [string, 'null']
+          format: date-time
+          description: |
+            When the payment webhook promoted this event from draft to active.
+            Null while it is still a draft.
+        qr_url:
+          type: string
+          format: uri
+          description: The URL encoded into the printed QR code.
+        created_at: { type: string, format: date-time }
+        ended_at: { type: [string, 'null'], format: date-time }
+
+    EventStats:
+      type: object
+      required: [pending, uploaded, processing, done, failed, guests_registered]
+      properties:
+        pending: { type: integer }
+        uploaded: { type: integer }
+        processing: { type: integer }
+        done: { type: integer }
+        failed: { type: integer }
+        guests_registered: { type: integer }
+        oldest_pending_seconds:
+          type: [integer, 'null']
+          description: |
+            Age of the oldest unprocessed job. The frontend shows a warning when
+            this climbs, which is the earliest visible sign the queue is falling
+            behind during a live event.
+
+    Photo:
+      type: object
+      required: [id, status, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        status: { type: string, enum: [pending, uploaded, processing, done, failed] }
+        thumbnail_url:
+          type: [string, 'null']
+          format: uri
+          description: Presigned GET, short-lived. Null until processed.
+        face_count: { type: [integer, 'null'] }
+        error_code:
+          type: [string, 'null']
+          description: Present only when status is `failed`.
+        created_at: { type: string, format: date-time }
+        processed_at: { type: [string, 'null'], format: date-time }
+
+    Checkout:
+      type: object
+      required: [razorpay_order_id, amount_paise, currency, key_id, event_id]
+      properties:
+        razorpay_order_id: { type: string }
+        amount_paise: { type: integer }
+        currency: { type: string, const: INR }
+        key_id:
+          type: string
+          description: Public Razorpay key. Never the secret.
+        event_id: { type: string, format: uuid }
+        prefill_contact: { type: [string, 'null'] }
+        prefill_name: { type: [string, 'null'] }
+
+    Payment:
+      type: object
+      required: [id, event_id, event_name, tier_code, amount_paise, status, created_at]
+      properties:
+        id: { type: string, format: uuid }
+        event_id: { type: string, format: uuid }
+        event_name: { type: string }
+        tier_code: { type: string, enum: [basic, pro, premium] }
+        amount_paise: { type: integer }
+        status:
+          type: string
+          enum: [created, captured, failed, refunded]
+          description: Mirrors Razorpay. `captured` is the only one that activates an event.
+        method:
+          type: [string, 'null']
+          description: upi, card, netbanking, wallet.
+        razorpay_payment_id: { type: [string, 'null'] }
+        created_at: { type: string, format: date-time }
+
+    Tier:
+      type: object
+      required: [code, name, price_paise, branding_mode, photo_retention_days, face_retention_days]
+      properties:
+        code: { type: string, enum: [basic, pro, premium] }
+        name: { type: string }
+        price_paise: { type: integer }
+        branding_mode: { type: string, enum: [platform, studio] }
+        photo_retention_days: { type: integer }
+        face_retention_days:
+          type: integer
+          description: |
+            The calling studio's negotiated biometric retention, echoed on every
+            tier because it is identical across all of them.
+
+            Deliberately NOT a tier feature: guests consent to a face scan
+            without knowing what the studio paid, so this is never something the
+            price can extend. It is agreed per studio by the platform, capped by
+            MAX_FACE_RETENTION_DAYS, and snapshotted onto each event at creation.
+        custom_domain: { type: boolean }
+
+    StudioMember:
+      type: object
+      required: [user_id, username, role, status, photos_uploaded]
+      properties:
+        user_id: { type: string, format: uuid }
+        username: { type: string }
+        email: { type: [string, 'null'] }
+        name: { type: [string, 'null'] }
+        role: { type: string, enum: [owner, photographer] }
+        status:
+          type: string
+          enum: [active, pending_first_login]
+          description: "`pending_first_login` until they sign in and set their own password."
+
+        photos_uploaded:
+          type: integer
+          description: Across all of this studio's events. Shows who is actually working.
+        last_active_at: { type: [string, 'null'], format: date-time }
+        invited_at: { type: string, format: date-time }
+
+    GuestEventInfo:
+      type: object
+      required: [event_name, event_date, branding, accepting_guests, face_retention_days]
+      properties:
+        event_name: { type: string }
+        event_date: { type: string, format: date }
+        accepting_guests:
+          type: boolean
+          description: False once the event has ended.
+        face_retention_days:
+          type: integer
+          description: |
+            Shown before consent, so a guest knows what they are agreeing to
+            before the camera opens rather than after.
+        branding:
+          type: object
+          required: [mode]
+          properties:
+            mode: { type: string, enum: [platform, studio] }
+            studio_name: { type: [string, 'null'] }
+            logo_url: { type: [string, 'null'], format: uri }
+            brand_color: { type: [string, 'null'] }
+
+    GuestPhoto:
+      type: object
+      required: [photo_id, thumbnail_url, full_url, matched_at]
+      properties:
+        photo_id: { type: string, format: uuid }
+        thumbnail_url: { type: string, format: uri, description: Presigned GET, ~1 hour. }
+        full_url: { type: string, format: uri, description: Presigned GET, ~1 hour. }
+        width: { type: integer }
+        height: { type: integer }
+        matched_at: { type: string, format: date-time }

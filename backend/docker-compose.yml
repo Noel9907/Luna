@@ -1,0 +1,27 @@
+# Project name is explicit so the volume cannot collide with another
+# docker-compose.yml that happens to live in a folder called "backend".
+name: frame
+
+# Postgres with pgvector already compiled in.
+# Using this image rather than plain postgres saves you the afternoon most
+# people lose trying to build the extension from source on Windows.
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: frame-db
+    environment:
+      POSTGRES_USER: frame
+      POSTGRES_PASSWORD: frame
+      POSTGRES_DB: frame
+    ports:
+      - "55432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U frame"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pgdata:

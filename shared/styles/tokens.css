@@ -1,0 +1,112 @@
+/* Frame design tokens. Single source of truth for all three apps. */
+
+:root {
+  --page: #ffffff;
+  --card: #f7f8f9;
+  --card2: #f1f2f4;
+  --card3: #e9ebee;
+  --line: #e8eaed;
+  --line2: #d6d9de;
+
+  --ink: #16181d;
+  --ink2: #454a54;
+  --ink3: #6b7280;
+  --ink4: #9aa1ac;
+
+  --pri: #2b45c4;
+  --pri-hov: #2338a8;
+  --pri-ink: #ffffff;
+  --pri-soft: #edf0fd;
+  --pri-line: #c3cdf5;
+
+  --grn: #0f7a4d;
+  --grn-bg: #dcf3e7;
+  --amb: #9a6206;
+  --amb-bg: #fcf0da;
+  --red: #b3332b;
+  --red-bg: #fbe9e7;
+  --red-line: #efb8b2;
+
+  --shadow: 0 1px 2px rgba(16, 24, 40, 0.04);
+
+  /* radii are graded on purpose: frame > card > control > pill */
+  --r-frame: 14px;
+  --r-card: 11px;
+  --r-ctl: 10px;
+  --r-pill: 999px;
+
+  --font: "Plus Jakarta Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, Consolas, monospace;
+}
+
+[data-theme="dark"] {
+  --page: #0a0b0d;
+  --card: #141619;
+  --card2: #1b1e22;
+  --card3: #242830;
+  --line: #232629;
+  --line2: #32363b;
+
+  --ink: #ebedf0;
+  --ink2: #b4bac3;
+  --ink3: #858c97;
+  --ink4: #666d78;
+
+  --pri: #5b76f0;
+  --pri-hov: #7189f5;
+  --pri-ink: #0a0b0d;
+  --pri-soft: #161b33;
+  --pri-line: #2c3763;
+
+  --grn: #4ecb8e;
+  --grn-bg: #0e251a;
+  --amb: #e0a84a;
+  --amb-bg: #241c0d;
+  --red: #e8837a;
+  --red-bg: #26140f;
+  --red-line: #4c2822;
+
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.3);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--page);
+  color: var(--ink);
+  font-family: var(--font);
+  font-size: 15px;
+  line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+}
+
+:focus-visible {
+  outline: 2px solid var(--pri);
+  outline-offset: 1px;
+  border-radius: 4px;
+}
+
+.mono {
+  font-family: var(--mono);
+}
+
+/* anything whose digits update in place, so columns stop jittering */
+.tnum {
+  font-variant-numeric: tabular-nums;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}

@@ -1,0 +1,44 @@
+# Production Postgres. Same pgvector image as development, so nothing about the
+# database differs between the machine you test on and the machine that holds
+# real weddings.
+name: frame
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: frame-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: frame
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: frame
+    ports:
+      # Bound to localhost. Postgres has no reason to be reachable from the
+      # internet, and most compromised databases are simply ones that were
+      # listening on 0.0.0.0.
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U frame"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+    command:
+      # 8GB machine, sharing with three workers and the API. These are modest
+      # on purpose: the queries here are small and indexed, and the memory is
+      # better spent on the processes doing the actual image work.
+      - postgres
+      - -c
+      - shared_buffers=1GB
+      - -c
+      - effective_cache_size=3GB
+      - -c
+      - work_mem=32MB
+      - -c
+      - maintenance_work_mem=256MB
+      - -c
+      - max_connections=100
+
+volumes:
+  pgdata:

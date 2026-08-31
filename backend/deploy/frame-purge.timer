@@ -1,0 +1,19 @@
+# /etc/systemd/system/frame-purge.timer
+#   sudo systemctl enable --now frame-purge.timer
+#
+# Hourly is plenty: every deadline in the retention rules is measured in days,
+# so an hour of lateness is invisible. A separate oneshot unit rather than a
+# thread inside the API, so a purge that fails cannot take the API with it, and
+# so `systemctl status frame-purge` says when it last ran and what it said.
+[Unit]
+Description=Run the Frame retention purge hourly
+
+[Timer]
+OnCalendar=hourly
+# Survives the machine being off: if a purge was missed, run it at boot rather
+# than waiting for the next whole hour.
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

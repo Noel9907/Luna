@@ -1,0 +1,70 @@
+# ── dependencies and build output ──────────────────────────────────────
+node_modules/
+dist/
+dist-electron/
+build/
+release/
+*.tsbuildinfo
+.vite/
+
+# ── secrets ────────────────────────────────────────────────────────────
+# .env holds database passwords, the JWT signing secret, and Razorpay keys.
+# .env.example is the template and is committed.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# ── other people's faces ───────────────────────────────────────────────
+# Uploaded photographs and their thumbnails. This is real biometric data from
+# real guests and must never reach a public repository.
+backend/storage/
+storage/
+testfaces/
+match_review.html
+
+# ── model weights ──────────────────────────────────────────────────────
+# ~38MB of ONNX, fetched by scripts/download_models.py. Apache 2.0, but
+# binaries do not belong in git.
+backend/models/
+*.onnx
+
+# ── python ─────────────────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# ── database dumps and logs ────────────────────────────────────────────
+*.dump
+*.dump.gz
+*.sql.gz
+*.log
+logs/
+*.stackdump
+
+# ── editors and OS ─────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── local tooling ──────────────────────────────────────────────────────
+.claude/settings.local.json
+
+# ── private working notes ──────────────────────────────────────────────
+# Business model, pricing, margins and personal context. Stays on this
+# machine. The public-facing version of this is README.md.
+CONTEXT.txt
+# Written in the second person and full of unit economics: margins, break-even,
+# revenue projections. README.md is the public version of the same reasoning.
+Architecture_V4_Final.html
+design-system.html

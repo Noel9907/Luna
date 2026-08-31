@@ -1,0 +1,26 @@
+# Kept alongside the root ignore file so the backend stays safe if it is ever
+# checked out on its own.
+
+.env
+.env.*
+!.env.example
+
+# Uploaded photographs and thumbnails: real guests' faces.
+storage/
+testfaces/
+match_review.html
+
+# ONNX weights, fetched by scripts/download_models.py.
+models/
+*.onnx
+
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.ruff_cache/
+.pytest_cache/
+
+*.dump
+*.dump.gz
+*.log

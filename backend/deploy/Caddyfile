@@ -1,0 +1,53 @@
+# Caddy does TLS, and that is genuinely all the configuration it needs.
+# Certificates are obtained and renewed automatically from Let's Encrypt; there
+# is no certbot, no cron entry and no renewal to forget.
+#
+#   /etc/caddy/Caddyfile
+#   sudo systemctl reload caddy
+
+api.frame.example.in {
+	# The API. Photo bytes never come through here: clients PUT straight to R2
+	# with a presigned URL, so this proxy only ever carries small JSON.
+	reverse_proxy 127.0.0.1:8000 {
+		# The client's real address, which the login throttle keys on. Caddy
+		# sets X-Forwarded-For itself; app/auth.py reads only the first entry
+		# and only because this proxy is ours.
+		header_up X-Real-IP {remote_host}
+	}
+
+	# The selfie endpoint accepts an image. Everything else is JSON well under
+	# a kilobyte, so this cap is generous and still refuses an upload attempt
+	# aimed at the API rather than at storage.
+	request_body {
+		max_size 10MB
+	}
+
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options nosniff
+		X-Frame-Options DENY
+		Referrer-Policy strict-origin-when-cross-origin
+		-Server
+	}
+
+	log {
+		output file /var/log/caddy/api.log {
+			roll_size 50mb
+			roll_keep 5
+		}
+	}
+}
+
+# The guest gallery. A static build, and the only thing a wedding guest ever
+# loads, so it is served directly rather than proxied.
+frame.example.in {
+	root * /srv/frame/guest
+	encode zstd gzip
+	try_files {path} /index.html
+	file_server
+
+	header /assets/* Cache-Control "public, max-age=31536000, immutable"
+	header /index.html Cache-Control "no-cache"
+}

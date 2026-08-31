@@ -1,0 +1,16 @@
+# /etc/systemd/system/frame-purge.service
+[Unit]
+Description=Frame retention purge
+
+[Service]
+Type=oneshot
+User=frame
+Group=frame
+WorkingDirectory=/srv/frame/backend
+EnvironmentFile=/srv/frame/backend/.env
+ExecStart=/srv/frame/venv/bin/python scripts/purge.py
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true

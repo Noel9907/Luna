@@ -1,0 +1,42 @@
+# /etc/systemd/system/frame-worker@.service
+#
+# A template, so workers are started by number:
+#   sudo systemctl enable --now frame-worker@1 frame-worker@2 frame-worker@3
+#
+# Three on a CPX31. Four cores, and the API plus Postgres want one between
+# them. At roughly 350ms per photograph that is about 8.5 photographs a second,
+# which is the number the whole capacity plan is built on.
+#
+# They coordinate only through Postgres, so adding or removing one needs no
+# configuration anywhere and can be done during a live event.
+
+[Unit]
+Description=Frame indexing worker %i
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=frame
+Group=frame
+WorkingDirectory=/srv/frame/backend
+EnvironmentFile=/srv/frame/backend/.env
+ExecStart=/srv/frame/venv/bin/python -m app.worker
+
+# SIGTERM makes the worker finish the photograph it is holding and then stop,
+# so a deploy in the middle of a wedding costs one photograph's latency rather
+# than a job that has to wait five minutes for its lock to go stale.
+KillSignal=SIGTERM
+TimeoutStopSec=60
+
+Restart=always
+RestartSec=3
+
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/srv/frame/backend/storage
+
+[Install]
+WantedBy=multi-user.target

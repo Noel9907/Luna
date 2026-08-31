@@ -1,0 +1,33 @@
+# /etc/systemd/system/frame-api.service
+[Unit]
+Description=Frame API
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=frame
+Group=frame
+WorkingDirectory=/srv/frame/backend
+EnvironmentFile=/srv/frame/backend/.env
+
+# One worker process. The API itself does almost no CPU work: the one blocking
+# thing it does, embedding a guest selfie, is a plain `def` so FastAPI runs it
+# in a threadpool rather than on the event loop. Photo indexing lives in the
+# separate worker units, which is what the four cores are actually for.
+ExecStart=/srv/frame/venv/bin/uvicorn app.main:app \
+    --host 127.0.0.1 --port 8000 \
+    --workers 1 --proxy-headers --forwarded-allow-ips=127.0.0.1
+
+Restart=always
+RestartSec=3
+
+# The process needs to read models and write nothing outside its own directory.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/srv/frame/backend/storage
+
+[Install]
+WantedBy=multi-user.target
