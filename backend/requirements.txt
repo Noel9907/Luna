@@ -11,9 +11,15 @@ pgvector>=0.3.5
 pydantic-settings>=2.5
 python-multipart>=0.0.12
 
-# Face detection and embedding. Both models are Apache 2.0 from OpenCV Zoo.
+# Face detection and embedding. YuNet and SFace are Apache 2.0 from OpenCV Zoo.
 opencv-python>=4.10
 numpy>=2.1
+
+# Only for FACE_BACKEND=auraface. AuraFace is Apache 2.0 and trained on
+# commercially licensed data, unlike InsightFace's weights, but it is a
+# ResNet100 and costs about 2.5x SFace per face on CPU. Not needed to run
+# the default install; scripts/measure_impostors.py skips it if absent.
+onnxruntime>=1.19
 
 # Storage and Razorpay. Razorpay is called over plain HTTP with requests, so
 # there is no payment SDK here on purpose: the whole integration is one POST

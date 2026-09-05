@@ -11,21 +11,60 @@ from starlette.concurrency import run_in_threadpool
 
 from app.config import settings
 from app.db import RLS_ACTIVE, get_system_db
+from app.models import EMBEDDING_DIM, MODEL_VERSION
 from app.errors import ApiError
 from app.storage import LocalStorage, get_storage
 
 router = APIRouter(tags=["ops"])
 
 
+def _column_dim(db: Session, table: str) -> int | None:
+    """The width Postgres actually declared, e.g. `vector(512)` -> 512."""
+    t = db.execute(
+        text(
+            """
+            SELECT format_type(a.atttypid, a.atttypmod)
+              FROM pg_attribute a
+             WHERE a.attrelid = CAST(:t AS regclass)
+               AND a.attname = 'embedding'
+               AND NOT a.attisdropped
+            """
+        ),
+        {"t": table},
+    ).scalar()
+    if not t or "(" not in t:
+        return None
+    try:
+        return int(t.split("(")[1].rstrip(")"))
+    except ValueError:
+        return None
+
+
 @router.get("/health")
 def health(db: Session = Depends(get_system_db)):
-    """Liveness plus the two facts that are wrong most often after a deploy."""
+    """Liveness plus the facts that are wrong most often after a deploy."""
     db.execute(select(1))
+
+    # FACE_BACKEND changed without running the migration, or the other way
+    # round. Left alone this surfaces as a pgvector insert error on the first
+    # photograph of an event, which is a bad time to find out.
+    faces_dim = _column_dim(db, "faces")
+    guest_dim = _column_dim(db, "guest_faces")
+    ok_dim = faces_dim == EMBEDDING_DIM and guest_dim == EMBEDDING_DIM
+
     return {
         "ok": True,
         "env": settings().env,
         "storage": settings().storage_backend,
         "row_level_security": RLS_ACTIVE,
+        "face_model": {
+            "backend": settings().face_backend,
+            "version": MODEL_VERSION,
+            "expected_dim": EMBEDDING_DIM,
+            "faces_column_dim": faces_dim,
+            "guest_faces_column_dim": guest_dim,
+            "schema_matches": ok_dim,
+        },
     }
 
 

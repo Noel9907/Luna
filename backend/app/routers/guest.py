@@ -128,7 +128,13 @@ def guest_selfie(
     if img is None:
         raise ApiError(422, "DECODE_FAILED", "We could not read that photo.")
 
-    engine = get_engine(settings().min_face_px, settings().min_detect_score)
+    # No blur floor here: selfie_error runs its own stricter gate and has to
+    # classify the failure rather than silently drop the face.
+    engine = get_engine(
+        settings().min_face_px,
+        settings().min_detect_score,
+        backend=settings().face_backend,
+    )
 
     # Classify the failure. Selfie rejection is the most common thing a guest
     # will ever see go wrong, and a generic message makes the whole product

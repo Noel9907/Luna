@@ -10,8 +10,8 @@ photographs come back.
 
 The API and at least one worker must already be running:
 
-    uvicorn app.main:app --reload
-    python -m app.worker
+    python -u -m uvicorn app.main:app --reload
+    python -u -m app.worker
 
 This is the test that matters, because it is the only one that runs the actual
 models over actual faces. `prove_api_flow.py` covers everything around the

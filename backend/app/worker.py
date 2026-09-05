@@ -180,7 +180,12 @@ def process(db: Session, job_id: str, event_id: str, photo_id: str) -> Photo:
     """
     from app.storage import get_storage
 
-    engine = get_engine(settings().min_face_px, settings().min_detect_score)
+    engine = get_engine(
+        settings().min_face_px,
+        settings().min_detect_score,
+        settings().index_min_blur,
+        settings().face_backend,
+    )
     storage = get_storage()
 
     photo = db.get(Photo, photo_id)
@@ -292,7 +297,13 @@ def run() -> None:
     signal.signal(signal.SIGTERM, _stop)
 
     print("  worker up. waiting for jobs. ctrl-c to stop.")
-    get_engine(settings().min_face_px, settings().min_detect_score)  # load models once
+    # load models once
+    get_engine(
+        settings().min_face_px,
+        settings().min_detect_score,
+        settings().index_min_blur,
+        settings().face_backend,
+    )
 
     while _running:
         with system_session() as sdb:

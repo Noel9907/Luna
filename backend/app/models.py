@@ -35,7 +35,15 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-from app.faces import EMBEDDING_DIM
+from app.config import settings
+from app.faces import BACKEND_DIMS, BACKEND_VERSIONS
+
+# The vector columns are declared at whatever width the configured backend
+# produces. Flipping FACE_BACKEND without running the matching migration
+# leaves the ORM and the database disagreeing; /v1/health checks for exactly
+# that rather than letting it surface as a confusing insert error mid-event.
+EMBEDDING_DIM = BACKEND_DIMS[settings().face_backend]
+MODEL_VERSION = BACKEND_VERSIONS[settings().face_backend]
 
 
 def now() -> datetime:
@@ -271,7 +279,7 @@ class Face(Base):
     # Embeddings from different models are not comparable. Without this column a
     # model upgrade silently starts returning wrong matches instead of an
     # obvious, filterable inconsistency.
-    model_version: Mapped[str] = mapped_column(String(40), default="sface-2021dec")
+    model_version: Mapped[str] = mapped_column(String(40), default=MODEL_VERSION)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 
@@ -314,7 +322,7 @@ class GuestFace(Base):
         ForeignKey("guest_sessions.id", ondelete="CASCADE"), index=True
     )
     embedding: Mapped[list[float]] = mapped_column(Vector(EMBEDDING_DIM))
-    model_version: Mapped[str] = mapped_column(String(40), default="sface-2021dec")
+    model_version: Mapped[str] = mapped_column(String(40), default=MODEL_VERSION)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=now)
 
 

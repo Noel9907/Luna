@@ -48,7 +48,7 @@ class Settings(BaseSettings):
     # ── where the apps live ───────────────────────────────────────────
     # The QR code encodes a guest URL, so this has to be right in production
     # or every printed QR at the venue points at localhost.
-    guest_base_url: str = "http://localhost:5175"
+    guest_base_url: str = "http://localhost:8000"
 
     # `null` is not a mistake. The packaged desktop app loads its window from
     # file://, and Chromium sends the literal string "null" as the Origin for
@@ -72,10 +72,28 @@ class Settings(BaseSettings):
     # Tune for PRECISION, not recall. A guest who misses a photograph is
     # disappointed; a guest who sees a stranger's photographs is a privacy
     # incident at somebody's wedding. Better to show fewer and be certain.
+    #
+    # 0.363 is OpenCV's SFace example value, tuned for 1:1 verification on LFW
+    # pairs. This is 1:N search over ~14,000 faces per event, so a per-pair
+    # false match rate that is fine for one comparison happens thousands of
+    # times a night. Placeholder until scripts/tune_threshold.py replaces it
+    # with a number measured on real venue photographs.
     match_threshold: float = 0.363
 
-    min_face_px: int = 80
+    # The recogniser's own input is 112x112. Anything smaller is upscaled before
+    # it is embedded, so the detail the model sees is invented.
+    min_face_px: int = 112
     min_detect_score: float = 0.7
+
+    # Blur floor for indexed faces, measured on the aligned 112x112 crop. The
+    # selfie gate is 40 and separate: a selfie is a close-up, a guest at the far
+    # end of a hall is not. 0.0 disables it. Raise with evidence from
+    # tune_threshold.py, which sweeps this and prints what it costs in recall.
+    index_min_blur: float = 0.0
+
+    # sface (128-dim, ships) or auraface (512-dim, needs onnxruntime and a
+    # migration). Changing this invalidates every stored embedding.
+    face_backend: str = "sface"
 
     # ── worker ────────────────────────────────────────────────────────
     worker_poll_seconds: float = 1.0

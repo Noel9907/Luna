@@ -68,3 +68,6 @@ CONTEXT.txt
 # revenue projections. README.md is the public version of the same reasoning.
 Architecture_V4_Final.html
 design-system.html
+
+# Database dumps taken before destructive migrations. Local only.
+backend/backups/
