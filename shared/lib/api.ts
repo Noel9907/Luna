@@ -23,7 +23,11 @@ import type {
   UploadSlot,
 } from './types'
 
-const BASE = import.meta.env.VITE_API_BASE ?? '/v1'
+// `||`, not `??`. An empty VITE_API_BASE must fall back to the relative path,
+// because that is how a production build is told to talk to whatever host
+// served it. With `??` an empty value stays an empty string and every request
+// loses its /v1 prefix.
+const BASE = import.meta.env.VITE_API_BASE || '/v1'
 
 let accessToken: string | null = localStorage.getItem('frame.token')
 let refreshToken: string | null = localStorage.getItem('frame.refresh')
