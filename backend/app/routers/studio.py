@@ -313,7 +313,16 @@ def update_branding(
         if value is not None:
             setattr(st, field, value)
 
-    record(db, who, "studio.branding_updated", "studio", st.id)
+    record(
+        db,
+        actor_user_id=who.user_id,
+        actor_label=who.username,
+        action="studio.branding_updated",
+        target_type="studio",
+        target_id=st.id,
+        studio_id=who.studio_id,
+        detail=body.model_dump(exclude_none=True),
+    )
     db.commit()
     return branding_json(st)
 
@@ -358,6 +367,15 @@ def upload_logo(
     get_storage().write(key, buf.tobytes(), "image/png")
     st.brand_logo_key = key
 
-    record(db, who, "studio.logo_uploaded", "studio", st.id)
+    record(
+        db,
+        actor_user_id=who.user_id,
+        actor_label=who.username,
+        action="studio.logo_uploaded",
+        target_type="studio",
+        target_id=st.id,
+        studio_id=who.studio_id,
+        detail={"bytes": len(raw)},
+    )
     db.commit()
     return branding_json(st)
