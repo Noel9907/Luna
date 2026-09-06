@@ -428,3 +428,26 @@
   text-decoration: none;
   font-size: 15px;
 }
+
+/* The download choice. Under the header rather than inside it: two buttons
+   side by side in a phone-width header would truncate both. */
+.g-menu {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  margin: 12px 14px 2px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-card);
+  overflow: hidden;
+  background: var(--line);
+}
+.g-menu__opt {
+  font-family: inherit;
+  text-align: left;
+  padding: 14px 16px;
+  border: 0;
+  background: var(--page);
+  cursor: pointer;
+}
+.g-menu__opt strong { display: block; font-size: 15px; color: var(--ink); }
+.g-menu__opt span { display: block; font-size: 13px; color: var(--ink3); margin-top: 2px; }

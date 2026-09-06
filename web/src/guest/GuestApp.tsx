@@ -213,6 +213,29 @@ export function GuestApp() {
     [session, photos, older, event],
   )
 
+  /*
+   * The same photographs as one file.
+   *
+   * Kept alongside the per-photograph save because the two suit different
+   * people: a phone wants pictures in the camera roll, a laptop wants one
+   * archive. iOS in particular throttles repeated downloads, so this is the
+   * path that reliably gets an iPhone guest everything in one go.
+   */
+  const downloadZip = useCallback(async () => {
+    if (!session) return
+    const blob = await guestApi.downloadZip(session)
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${(event?.event_name ?? 'photographs').replace(/[^\w -]+/g, '')}.zip`
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    // Revoked late: revoking before the click is processed cancels the download
+    // it was created for.
+    setTimeout(() => URL.revokeObjectURL(url), 60_000)
+  }, [session, event])
+
   function showPending() {
     setPhotos((prev) => {
       const seen = new Set(prev.map((p) => p.photo_id))
@@ -317,6 +340,7 @@ export function GuestApp() {
       hasMore={older !== null}
       onLoadMore={loadMore}
       onDownloadAll={downloadAll}
+      onDownloadZip={downloadZip}
       pendingCount={pending.length}
       onShowPending={showPending}
       onPoll={poll}

@@ -15,6 +15,7 @@ export function GalleryScreen({
   hasMore,
   onLoadMore,
   onDownloadAll,
+  onDownloadZip,
   pendingCount,
   onShowPending,
   onPoll,
@@ -27,6 +28,7 @@ export function GalleryScreen({
   hasMore: boolean
   onLoadMore: () => void
   onDownloadAll: (onProgress: (done: number, total: number) => void) => Promise<void>
+  onDownloadZip: () => Promise<void>
   pendingCount: number
   onShowPending: () => void
   onPoll: () => void
@@ -35,6 +37,8 @@ export function GalleryScreen({
   const [open, setOpen] = useState<number | null>(null)
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [saving, setSaving] = useState<{ done: number; total: number } | null>(null)
+  const [zipping, setZipping] = useState(false)
+  const [menu, setMenu] = useState(false)
   const pollRef = useRef(onPoll)
   pollRef.current = onPoll
   const sentinel = useRef<HTMLDivElement | null>(null)
@@ -110,25 +114,61 @@ export function GalleryScreen({
           {photos.length > 0 ? (
             <button
               className="g-dlbtn"
-              disabled={saving !== null}
-              onClick={async () => {
-                setSaving({ done: 0, total: 0 })
-                try {
-                  await onDownloadAll((done, total) => setSaving({ done, total }))
-                } finally {
-                  setSaving(null)
-                }
-              }}
+              disabled={saving !== null || zipping}
+              onClick={() => setMenu((v) => !v)}
             >
               {saving
                 ? saving.total
                   ? `Saving ${saving.done} of ${saving.total}`
                   : 'Preparing'
-                : 'Download all'}
+                : zipping
+                  ? 'Preparing zip'
+                  : 'Download all'}
             </button>
           ) : null}
         </div>
       </header>
+
+      {menu ? (
+        <div className="g-menu">
+          {/*
+            Two ways because they suit different devices. Individual files land
+            in a phone's camera roll where a guest expects them; a zip is one
+            file for a laptop, and is the path that works on iOS, which
+            throttles repeated downloads.
+          */}
+          <button
+            className="g-menu__opt"
+            onClick={async () => {
+              setMenu(false)
+              setSaving({ done: 0, total: 0 })
+              try {
+                await onDownloadAll((done, total) => setSaving({ done, total }))
+              } finally {
+                setSaving(null)
+              }
+            }}
+          >
+            <strong>Save photos</strong>
+            <span>One file each, straight into your photos</span>
+          </button>
+          <button
+            className="g-menu__opt"
+            onClick={async () => {
+              setMenu(false)
+              setZipping(true)
+              try {
+                await onDownloadZip()
+              } finally {
+                setZipping(false)
+              }
+            }}
+          >
+            <strong>Download as ZIP</strong>
+            <span>One file with everything. Better on a computer.</span>
+          </button>
+        </div>
+      ) : null}
 
       {pendingCount > 0 ? (
         <button className="g-new" onClick={onShowPending}>
