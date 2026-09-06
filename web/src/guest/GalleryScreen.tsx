@@ -14,6 +14,7 @@ export function GalleryScreen({
   totalCount,
   hasMore,
   onLoadMore,
+  onDownloadAll,
   pendingCount,
   onShowPending,
   onPoll,
@@ -25,6 +26,7 @@ export function GalleryScreen({
   totalCount: number
   hasMore: boolean
   onLoadMore: () => void
+  onDownloadAll: () => Promise<void>
   pendingCount: number
   onShowPending: () => void
   onPoll: () => void
@@ -32,6 +34,7 @@ export function GalleryScreen({
 }) {
   const [open, setOpen] = useState<number | null>(null)
   const [confirmDelete, setConfirmDelete] = useState(false)
+  const [zipping, setZipping] = useState(false)
   const pollRef = useRef(onPoll)
   pollRef.current = onPoll
   const sentinel = useRef<HTMLDivElement | null>(null)
@@ -135,6 +138,26 @@ export function GalleryScreen({
         </div>
       ) : null}
 
+      {photos.length > 0 ? (
+        <div className="g-dl">
+          <button
+            className="g-btn g-btn--pri"
+            disabled={zipping}
+            onClick={async () => {
+              setZipping(true)
+              try {
+                await onDownloadAll()
+              } finally {
+                setZipping(false)
+              }
+            }}
+          >
+            {zipping ? 'Preparing your photographs' : `Download all ${totalCount || photos.length}`}
+          </button>
+          <p className="g-note">Large. Use wifi if you can.</p>
+        </div>
+      ) : null}
+
       <footer className="g-foot">
         {confirmDelete ? (
           <div className="g-confirm">
@@ -168,6 +191,14 @@ export function GalleryScreen({
             <img src={current.full_url} alt="" decoding="async" />
           </div>
           <div className="g-light__bar">
+            {/*
+              A plain link, not a fetch. The signed URL is on this same origin,
+              which is the condition for `download` to save the file instead of
+              navigating to it.
+            */}
+            <a className="g-light__save" href={current.full_url} download={`photograph-${(open ?? 0) + 1}.jpg`}>
+              Save
+            </a>
             <button
               className="g-light__nav"
               disabled={open === 0}

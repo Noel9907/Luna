@@ -167,6 +167,24 @@ export function GuestApp() {
     }
   }, [session, older])
 
+  /*
+   * Hand the browser a blob and let it save. Revoked on the next tick rather
+   * than immediately: revoking before the click is processed cancels the very
+   * download it was created for.
+   */
+  const downloadAll = useCallback(async () => {
+    if (!session) return
+    const blob = await guestApi.downloadAll(session)
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = `${event?.event_name ?? 'photographs'}.zip`
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    setTimeout(() => URL.revokeObjectURL(url), 60_000)
+  }, [session, event])
+
   function showPending() {
     setPhotos((prev) => {
       const seen = new Set(prev.map((p) => p.photo_id))
@@ -270,6 +288,7 @@ export function GuestApp() {
       totalCount={total}
       hasMore={older !== null}
       onLoadMore={loadMore}
+      onDownloadAll={downloadAll}
       pendingCount={pending.length}
       onShowPending={showPending}
       onPoll={poll}
