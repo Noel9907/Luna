@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import signal
 import sys
+from dataclasses import dataclass
 from functools import lru_cache
 import time
 from datetime import datetime, timedelta, timezone
@@ -32,7 +33,7 @@ from app.config import settings
 from app.db import system_session, tenant_session
 from app.faces import MODELS, get_engine
 from app.matching import match_face_against_guests, upsert_matches
-from app.models import Face, Job, Photo
+from app.models import Face, Job, Photo, Studio
 
 _running = True
 
@@ -136,7 +137,7 @@ def claim_job(db: Session) -> tuple[str, str, str, str, int] | None:
 # ── image work ─────────────────────────────────────────────────────────
 
 
-def make_thumbnail(image_bgr: np.ndarray) -> bytes:
+def make_thumbnail(image_bgr: np.ndarray, mark: "Mark | None" = None) -> bytes:
     """
     A small JPEG for the guest gallery.
 
@@ -158,12 +159,71 @@ def make_thumbnail(image_bgr: np.ndarray) -> bytes:
         if scale < 1.0
         else image_bgr
     )
-    if watermark_enabled():
-        small = apply_watermark(small)
+    if mark is not None or watermark_enabled():
+        small = apply_watermark(small, mark)
     ok, buf = cv2.imencode(".jpg", small, [int(cv2.IMWRITE_JPEG_QUALITY), s.thumb_quality])
     if not ok:
         raise ValueError("THUMBNAIL_FAILED")
     return buf.tobytes()
+
+
+@dataclass(frozen=True)
+class Mark:
+    """One studio's watermark settings, resolved for a single photograph."""
+
+    logo: np.ndarray | None
+    scale: float
+    opacity: float
+
+
+def _studio_logo(key: str, stamp: str) -> np.ndarray | None:
+    """
+    A studio's logo, fetched from storage and cropped to its own ink.
+
+    Cached on (key, stamp) so a worker fetches it once rather than per
+    photograph. `stamp` is the studio's updated marker: re-uploading a logo
+    changes it and the old image falls out of the cache, which a cache keyed on
+    the storage path alone would not do, since the path never changes.
+    """
+    return _logo_from_bytes(key)
+
+
+@lru_cache(maxsize=16)
+def _logo_from_bytes(key: str) -> np.ndarray | None:
+    from app.storage import get_storage
+
+    try:
+        raw = get_storage().read(key)
+    except Exception:  # noqa: BLE001 - a missing logo must not fail the photograph
+        print(f"  logo missing at {key}, photograph left unmarked", flush=True)
+        return None
+    img = cv2.imdecode(np.frombuffer(raw, np.uint8), cv2.IMREAD_UNCHANGED)
+    if img is None:
+        return None
+    if img.ndim == 2:
+        img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGRA)
+    elif img.shape[2] == 3:
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2BGRA)
+    ys, xs = np.where(img[:, :, 3] > 8)
+    if len(xs) == 0:
+        return None
+    return img[ys.min() : ys.max() + 1, xs.min() : xs.max() + 1]
+
+
+def mark_for(db: Session, studio_id: str) -> Mark | None:
+    """
+    The watermark for this job's studio, or None if it is switched off.
+
+    Read per job rather than from config: the mark belongs to the studio, and a
+    worker serves every studio on the box.
+    """
+    st = db.get(Studio, studio_id)
+    if st is None or not st.watermark_enabled or not st.brand_logo_key:
+        return None
+    logo = _studio_logo(st.brand_logo_key, str(st.id))
+    if logo is None:
+        return None
+    return Mark(logo=logo, scale=st.watermark_scale, opacity=st.watermark_opacity)
 
 
 @lru_cache(maxsize=2)
@@ -188,7 +248,7 @@ def _logo_bgra(path: str) -> np.ndarray | None:
     return img[ys.min() : ys.max() + 1, xs.min() : xs.max() + 1]
 
 
-def overlay_logo(image_bgr: np.ndarray, logo: np.ndarray) -> np.ndarray:
+def overlay_logo(image_bgr: np.ndarray, logo: np.ndarray, mark: "Mark | None" = None) -> np.ndarray:
     """
     Alpha-composite the mark along the bottom edge, centred.
 
@@ -197,9 +257,11 @@ def overlay_logo(image_bgr: np.ndarray, logo: np.ndarray) -> np.ndarray:
     against without turning the mark into a solid box.
     """
     s = settings()
+    scale = mark.scale if mark else s.watermark_scale
+    opacity = mark.opacity if mark else s.watermark_opacity
     h, w = image_bgr.shape[:2]
 
-    lw = max(24, int(w * s.watermark_scale))
+    lw = max(24, int(w * scale))
     lh = max(12, round(lw * logo.shape[0] / logo.shape[1]))
     if lw >= w or lh >= h:
         return image_bgr
@@ -211,7 +273,7 @@ def overlay_logo(image_bgr: np.ndarray, logo: np.ndarray) -> np.ndarray:
         return image_bgr
 
     out = image_bgr.copy()
-    alpha = (small[:, :, 3:4].astype(np.float32) / 255.0) * s.watermark_opacity
+    alpha = (small[:, :, 3:4].astype(np.float32) / 255.0) * opacity
 
     # Shadow: the same shape, black, offset a little and blurred.
     off = max(1, lh // 40)
@@ -230,8 +292,16 @@ def overlay_logo(image_bgr: np.ndarray, logo: np.ndarray) -> np.ndarray:
     return out
 
 
-def apply_watermark(image_bgr: np.ndarray) -> np.ndarray:
-    """Logo if one is configured, otherwise the text mark, otherwise untouched."""
+def apply_watermark(image_bgr: np.ndarray, mark: "Mark | None" = None) -> np.ndarray:
+    """
+    The studio's own mark first, then whatever the server was configured with.
+
+    The per-studio setting is the real feature; the config values are a
+    single-tenant fallback from before studios could set their own, and are what
+    a box running one studio still uses if nothing is configured in the app.
+    """
+    if mark is not None:
+        return overlay_logo(image_bgr, mark.logo, mark)
     s = settings()
     if s.watermark_logo:
         logo = _logo_bgra(s.watermark_logo)
@@ -275,9 +345,9 @@ def draw_watermark(image_bgr: np.ndarray, text: str) -> np.ndarray:
     return cv2.addWeighted(out, a, image_bgr, 1.0 - a, 0.0)
 
 
-def make_display(image_bgr: np.ndarray) -> bytes:
+def make_display(image_bgr: np.ndarray, mark: "Mark | None" = None) -> bytes:
     """The full-size copy a guest opens, watermarked. The original is untouched."""
-    marked = apply_watermark(image_bgr)
+    marked = apply_watermark(image_bgr, mark)
     ok, buf = cv2.imencode(".jpg", marked, [int(cv2.IMWRITE_JPEG_QUALITY), 88])
     if not ok:
         raise ValueError("THUMBNAIL_FAILED")
@@ -334,13 +404,18 @@ def process(db: Session, job_id: str, event_id: str, photo_id: str) -> Photo:
     photo.height, photo.width = img.shape[:2]
 
     thumb_key = thumb_key_for(event_id, photo.id)
-    storage.write(thumb_key, make_thumbnail(img), "image/jpeg")
+    # Resolved once per photograph, from the studio that owns this job.
+    mark = mark_for(db, photo.studio_id)
+
+    storage.write(thumb_key, make_thumbnail(img, mark), "image/jpeg")
     photo.thumb_key = thumb_key
 
     # A watermarked full-size copy, written beside the original rather than over
     # it, so the mark can be removed later without re-uploading anything.
-    if watermark_enabled():
-        storage.write(display_key_for(event_id, photo.id), make_display(img), "image/jpeg")
+    if mark is not None or watermark_enabled():
+        storage.write(
+            display_key_for(event_id, photo.id), make_display(img, mark), "image/jpeg"
+        )
 
     found = engine.detect_and_embed(img)
 

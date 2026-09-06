@@ -72,7 +72,16 @@ class Studio(Base):
     city: Mapped[str | None] = mapped_column(String(80), nullable=True)
 
     brand_color: Mapped[str | None] = mapped_column(String(9), nullable=True)
+    # One logo, two jobs: shown on the guest gallery for studio-branded events,
+    # and burned into the photographs when the watermark is on. Uploading it
+    # twice would let the two drift apart.
     brand_logo_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    # The watermark belongs to the studio, not the server. Two studios on one
+    # box brand their own photographs and neither can reach the other's.
+    watermark_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    watermark_scale: Mapped[float] = mapped_column(Float, default=0.20)
+    watermark_opacity: Mapped[float] = mapped_column(Float, default=0.75)
 
     # The negotiated face retention for this studio. Copied onto each event at
     # creation, so raising it later cannot reach back into events whose guests

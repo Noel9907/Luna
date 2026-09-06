@@ -991,3 +991,36 @@
     grid-template-columns: 1fr;
   }
 }
+
+/* ── branding ─────────────────────────────────────────────────────── */
+
+.bstack { display: flex; flex-direction: column; gap: 18px; max-width: 720px; }
+.brand__h { margin: 0 0 6px; font-size: 16px; font-weight: 600; color: var(--ink); }
+.brand__p { margin: 0 0 16px; font-size: 14px; line-height: 1.5; color: var(--ink3); }
+.brand__hint { margin: 8px 0 16px; font-size: 13px; color: var(--ink4); }
+
+/* Two grounds, because a logo that reads on white can vanish on black and the
+   studio should discover that here rather than from a guest. */
+.brandrow { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.logobox {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 130px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  overflow: hidden;
+}
+.logobox img { max-width: 78%; max-height: 78%; object-fit: contain; }
+.logobox__none { font-size: 13px; color: var(--ink4); }
+
+.bswitch { display: flex; align-items: center; gap: 10px; font-size: 14px; color: var(--ink2); }
+.bswitch input { width: 16px; height: 16px; accent-color: var(--pri); }
+
+.brow { display: flex; align-items: center; gap: 14px; margin-top: 16px; font-size: 14px; }
+.brow label { width: 74px; color: var(--ink3); }
+.brow input[type='range'] { flex: 1; accent-color: var(--pri); }
+.brow span { width: 110px; text-align: right; color: var(--ink3); }
+.brow input:disabled { opacity: 0.45; }
+
+.note--bad { border-color: var(--red-line, #7c2d33); background: var(--red-bg, #2a1416); color: var(--ink2); }

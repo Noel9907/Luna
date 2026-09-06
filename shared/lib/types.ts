@@ -296,3 +296,12 @@ export interface Payment {
   razorpay_payment_id: string | null
   created_at: string
 }
+
+export type Branding = {
+  brand_color: string | null
+  logo_url: string | null
+  has_logo: boolean
+  watermark_enabled: boolean
+  watermark_scale: number
+  watermark_opacity: number
+}

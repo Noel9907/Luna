@@ -39,11 +39,3 @@ export const ActivityPage = () => (
     when="Phase 2"
   />
 )
-
-export const BrandingPage = () => (
-  <Placeholder
-    title="Branding"
-    what="Upload your studio logo and set a brand colour. Guests see these on the gallery when the event is on the Pro or Premium plan."
-    when="Phase 2"
-  />
-)

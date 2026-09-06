@@ -109,6 +109,21 @@ def guest_context(
 # database problem rather than a routing one.
 
 
+def _is_marked(ctx: GuestCtx) -> bool:
+    """
+    Whether this event's photographs have a watermarked copy to serve.
+
+    The studio's own setting decides it; the server config is the single-tenant
+    fallback from before studios could set their own. Read per request because
+    it is a primary key lookup, and getting it wrong points every full-size URL
+    at a file that was never written.
+    """
+    st = ctx.db.get(Studio, ctx.studio_id)
+    if st is not None and st.watermark_enabled and st.brand_logo_key:
+        return True
+    return bool(settings().watermark_logo or settings().watermark_text)
+
+
 @router.post("/g/selfie")
 def guest_selfie(
     selfie: UploadFile = File(...),
@@ -277,7 +292,7 @@ def guest_photos(
     # so this needs no column and no migration. Photographs indexed before the
     # setting was turned on have no such copy, so turning it on mid-event means
     # re-queueing them.
-    marked = bool(settings().watermark_logo or settings().watermark_text)
+    marked = _is_marked(ctx)
 
     items = [
         {
@@ -324,7 +339,7 @@ def guest_download_all(ctx: GuestCtx = Depends(guest_context)):
     """
     db = ctx.db
     storage = get_storage()
-    marked = bool(settings().watermark_logo or settings().watermark_text)
+    marked = _is_marked(ctx)
 
     rows = db.execute(
         text(

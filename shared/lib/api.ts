@@ -18,6 +18,7 @@ import type {
   Photo,
   StudioMember,
   TokenPair,
+  Branding,
   Payment,
   Tier,
   UploadSlot,
@@ -186,6 +187,26 @@ export const api = {
   },
 
   me: () => request<Me>('/me'),
+
+  branding: () => request<Branding>('/studio/branding'),
+
+  updateBranding: (input: {
+    brand_color?: string | null
+    watermark_enabled?: boolean
+    watermark_scale?: number
+    watermark_opacity?: number
+  }) => request<Branding>('/studio/branding', { method: 'PATCH', body: JSON.stringify(input) }),
+
+  /**
+   * Multipart, so no Content-Type header is set by hand: the browser has to
+   * add its own with the boundary, and setting it manually produces a body the
+   * server cannot parse.
+   */
+  uploadLogo: (file: File) => {
+    const form = new FormData()
+    form.append('logo', file)
+    return request<Branding>('/studio/branding/logo', { method: 'POST', body: form })
+  },
 
   events: (status?: string) =>
     request<Page<Event>>(`/events${status ? `?status=${status}` : ''}`),

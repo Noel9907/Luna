@@ -14,7 +14,9 @@ import secrets
 import string
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, Response
+import cv2
+import numpy as np
+from fastapi import APIRouter, Depends, File, Response, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
@@ -23,8 +25,9 @@ from sqlalchemy.orm import Session
 from app import auth
 from app.audit import record
 from app.errors import ApiError
-from app.models import Photo, User
+from app.models import Photo, Studio, User
 from app.security import Principal, hash_password
+from app.storage import get_storage
 
 router = APIRouter(tags=["members"])
 
@@ -234,3 +237,127 @@ def remove_member(
         sdb.commit()
 
     return Response(status_code=204)
+
+
+# ── branding ───────────────────────────────────────────────────────────
+#
+# The logo is uploaded through the API rather than presigned straight to
+# storage, unlike photographs. Photographs are large, numerous and trusted
+# because the studio chose them; a logo is small, uploaded once, and has to be
+# validated before it is ever composited over somebody's wedding photographs.
+
+MAX_LOGO_BYTES = 4 * 1024 * 1024
+MIN_LOGO_EDGE = 80
+
+
+class BrandingIn(BaseModel):
+    brand_color: str | None = Field(default=None, max_length=9)
+    watermark_enabled: bool | None = None
+    # Bounded here, not just in the UI. Above ~0.6 the mark covers the
+    # photograph; below ~0.05 it is invisible at thumbnail size and the studio
+    # would think the feature was broken.
+    watermark_scale: float | None = Field(default=None, ge=0.05, le=0.6)
+    watermark_opacity: float | None = Field(default=None, ge=0.1, le=1.0)
+
+
+def branding_json(st: Studio) -> dict:
+    logo_url = None
+    if st.brand_logo_key:
+        logo_url = get_storage().signed_get_url(st.brand_logo_key, seconds=86400)
+    return {
+        "brand_color": st.brand_color,
+        "logo_url": logo_url,
+        "has_logo": bool(st.brand_logo_key),
+        "watermark_enabled": st.watermark_enabled,
+        "watermark_scale": st.watermark_scale,
+        "watermark_opacity": st.watermark_opacity,
+    }
+
+
+def _my_studio(db: Session, who: Principal) -> Studio:
+    st = db.get(Studio, who.studio_id)
+    if st is None:
+        raise ApiError(404, "NOT_FOUND", "Studio not found.")
+    return st
+
+
+@router.get("/studio/branding")
+def get_branding(
+    who: Principal = Depends(auth.principal),
+    db: Session = Depends(auth.active_studio_db),
+):
+    return branding_json(_my_studio(db, who))
+
+
+@router.patch("/studio/branding")
+def update_branding(
+    body: BrandingIn,
+    who: Principal = Depends(auth.principal),
+    db: Session = Depends(auth.owner_db),
+):
+    """
+    Changes apply to photographs indexed from now on.
+
+    The mark is burned in when a photograph is processed, not when it is viewed,
+    so turning it on does not reach back over an event that is already indexed.
+    Said plainly in the response rather than left for the studio to discover
+    halfway through a reception.
+    """
+    st = _my_studio(db, who)
+
+    if body.watermark_enabled and not st.brand_logo_key:
+        raise ApiError(422, "NO_LOGO", "Upload a logo before turning the watermark on.")
+
+    for field in ("brand_color", "watermark_enabled", "watermark_scale", "watermark_opacity"):
+        value = getattr(body, field)
+        if value is not None:
+            setattr(st, field, value)
+
+    record(db, who, "studio.branding_updated", "studio", st.id)
+    db.commit()
+    return branding_json(st)
+
+
+@router.post("/studio/branding/logo")
+def upload_logo(
+    logo: UploadFile = File(...),
+    who: Principal = Depends(auth.principal),
+    db: Session = Depends(auth.owner_db),
+):
+    """
+    Stored as PNG whatever arrives, because the alpha channel is the point.
+
+    A JPEG logo has no transparency, so compositing it paints a rectangle of
+    background over the photograph. Re-encoding to PNG keeps alpha when the
+    source had it and at least makes the failure honest when it did not.
+    """
+    st = _my_studio(db, who)
+
+    raw = logo.file.read(MAX_LOGO_BYTES + 1)
+    if len(raw) > MAX_LOGO_BYTES:
+        raise ApiError(413, "FILE_TOO_LARGE", "That logo is too large. Keep it under 4MB.")
+
+    img = cv2.imdecode(np.frombuffer(raw, np.uint8), cv2.IMREAD_UNCHANGED)
+    if img is None:
+        raise ApiError(422, "DECODE_FAILED", "We could not read that image.")
+    if min(img.shape[:2]) < MIN_LOGO_EDGE:
+        raise ApiError(422, "LOGO_TOO_SMALL", "That logo is too small to print clearly.")
+
+    if img.ndim == 2:
+        img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGRA)
+    elif img.shape[2] == 3:
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2BGRA)
+
+    ok, buf = cv2.imencode(".png", img)
+    if not ok:
+        raise ApiError(422, "DECODE_FAILED", "We could not read that image.")
+
+    # Fixed key per studio: uploading a new logo replaces the old one rather
+    # than leaving orphans nothing will ever delete.
+    key = f"studios/{st.id}/logo.png"
+    get_storage().write(key, buf.tobytes(), "image/png")
+    st.brand_logo_key = key
+
+    record(db, who, "studio.logo_uploaded", "studio", st.id)
+    db.commit()
+    return branding_json(st)
