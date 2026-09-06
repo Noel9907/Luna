@@ -13,6 +13,7 @@ which event this is. Everything after that runs on the tenant connection.
 from __future__ import annotations
 
 import tempfile
+import threading
 import zipfile
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
@@ -49,6 +50,15 @@ MAX_SELFIE_BYTES = 8 * 1024 * 1024
 # without it a single request can pin a threadpool thread for minutes while
 # the photographer's uploads queue behind it.
 MAX_DOWNLOAD_PHOTOS = 600
+
+# Only this many zips may be in flight at once, across all events.
+#
+# Measured: 88 photographs is 43.8MB and took 131s to transfer, which is the
+# uplink, not the server. A sync endpoint holds a threadpool thread for that
+# whole time, so a handful of guests tapping "download all" during a reception
+# would consume the pool and the photographer's uploads would queue behind
+# them. Refusing the fourth is much better than stalling the event.
+_zip_slots = threading.Semaphore(3)
 
 
 @dataclass
@@ -333,6 +343,11 @@ def guest_download_all(ctx: GuestCtx = Depends(guest_context)):
     if not rows:
         raise ApiError(404, "NOTHING_TO_DOWNLOAD", "There is nothing to download yet.")
 
+    if not _zip_slots.acquire(blocking=False):
+        raise ApiError(
+            503, "DOWNLOAD_BUSY", "Too many downloads right now. Try again in a minute."
+        )
+
     spool = tempfile.SpooledTemporaryFile(max_size=8 * 1024 * 1024)
     written = 0
     with zipfile.ZipFile(spool, "w", zipfile.ZIP_STORED) as zf:
@@ -348,6 +363,7 @@ def guest_download_all(ctx: GuestCtx = Depends(guest_context)):
             written += 1
 
     if written == 0:
+        _zip_slots.release()
         # Matches exist but not one file could be read. In practice this means
         # watermarking was switched on after these photographs were indexed, so
         # the display copies were never written. Logged loudly because the guest
@@ -364,8 +380,19 @@ def guest_download_all(ctx: GuestCtx = Depends(guest_context)):
 
     size = spool.tell()
     spool.seek(0)
+
+    def stream():
+        # The slot is held until the last byte leaves, not until the zip is
+        # built. The transfer is the expensive part.
+        try:
+            while chunk := spool.read(256 * 1024):
+                yield chunk
+        finally:
+            spool.close()
+            _zip_slots.release()
+
     return StreamingResponse(
-        spool,
+        stream(),
         media_type="application/zip",
         headers={
             "Content-Disposition": 'attachment; filename="photographs.zip"',
