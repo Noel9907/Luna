@@ -12,16 +12,12 @@ which event this is. Everything after that runs on the tenant connection.
 
 from __future__ import annotations
 
-import tempfile
-import threading
-import zipfile
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
 import cv2
 import numpy as np
 from fastapi import APIRouter, Depends, File, Header, Query, Response, UploadFile
-from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
@@ -45,21 +41,6 @@ SELFIE_MESSAGES = {
 }
 
 MAX_SELFIE_BYTES = 8 * 1024 * 1024
-
-# A ceiling on one zip. Guards the worst case rather than the normal one:
-# without it a single request can pin a threadpool thread for minutes while
-# the photographer's uploads queue behind it.
-MAX_DOWNLOAD_PHOTOS = 600
-
-# Only this many zips may be in flight at once, across all events.
-#
-# Measured: 88 photographs is 43.8MB and took 131s to transfer, which is the
-# uplink, not the server. A sync endpoint holds a threadpool thread for that
-# whole time, so a handful of guests tapping "download all" during a reception
-# would consume the pool and the photographer's uploads would queue behind
-# them. Refusing the fourth is much better than stalling the event.
-_zip_slots = threading.Semaphore(3)
-
 
 @dataclass
 class GuestCtx:
@@ -319,101 +300,6 @@ def guest_photos(
         "latest_cursor": (newest or datetime.now(timezone.utc)).isoformat(),
         "total_count": total_count,
     }
-
-
-@router.get("/g/download")
-def guest_download_all(ctx: GuestCtx = Depends(guest_context)):
-    """
-    Every photograph this guest appears in, as one zip.
-
-    Serves the watermarked copies when watermarking is on, exactly as the
-    gallery does. A guest is never handed the clean original.
-
-    ZIP_STORED, not DEFLATE. These are JPEGs: they are already compressed, so
-    deflating them burns CPU on every request to save almost nothing. Storing
-    makes the zip a copy rather than a computation.
-
-    Spooled to disk past a few megabytes rather than held in memory. A guest in
-    a thousand photographs is half a gigabyte, and several of them at once would
-    otherwise be enough to take the process down during a reception.
-    """
-    db = ctx.db
-    storage = get_storage()
-    marked = _is_marked(ctx)
-
-    rows = db.execute(
-        text(
-            """
-            SELECT p.id, p.storage_key, p.filename
-              FROM guest_matches m
-              JOIN photos p ON p.id = m.photo_id
-             WHERE m.guest_session_id = :gs AND p.status = 'done'
-             ORDER BY m.created_at DESC, p.id DESC
-             LIMIT :cap
-            """
-        ),
-        {"gs": ctx.session_id, "cap": MAX_DOWNLOAD_PHOTOS},
-    ).all()
-
-    if not rows:
-        raise ApiError(404, "NOTHING_TO_DOWNLOAD", "There is nothing to download yet.")
-
-    if not _zip_slots.acquire(blocking=False):
-        raise ApiError(
-            503, "DOWNLOAD_BUSY", "Too many downloads right now. Try again in a minute."
-        )
-
-    spool = tempfile.SpooledTemporaryFile(max_size=8 * 1024 * 1024)
-    written = 0
-    with zipfile.ZipFile(spool, "w", zipfile.ZIP_STORED) as zf:
-        for i, (photo_id, storage_key, filename) in enumerate(rows, start=1):
-            key = f"events/{ctx.event_id}/display/{photo_id}.jpg" if marked else storage_key
-            try:
-                data = storage.read(key)
-            except Exception:  # noqa: BLE001
-                # One missing object must not cost the guest the other 999.
-                # Happens when watermarking was switched on after indexing.
-                continue
-            zf.writestr(f"photographs/{i:04d}.jpg", data)
-            written += 1
-
-    if written == 0:
-        _zip_slots.release()
-        # Matches exist but not one file could be read. In practice this means
-        # watermarking was switched on after these photographs were indexed, so
-        # the display copies were never written. Logged loudly because the guest
-        # sees a generic message and the cause is entirely operational.
-        print(
-            f"  DOWNLOAD EMPTY: {len(rows)} matches, 0 readable. "
-            f"watermark={'on' if marked else 'off'}. "
-            "If on, re-index: the display/ copies are made at index time.",
-            flush=True,
-        )
-        raise ApiError(
-            503, "DOWNLOAD_UNAVAILABLE", "Downloads are not ready yet. Try again shortly."
-        )
-
-    size = spool.tell()
-    spool.seek(0)
-
-    def stream():
-        # The slot is held until the last byte leaves, not until the zip is
-        # built. The transfer is the expensive part.
-        try:
-            while chunk := spool.read(256 * 1024):
-                yield chunk
-        finally:
-            spool.close()
-            _zip_slots.release()
-
-    return StreamingResponse(
-        stream(),
-        media_type="application/zip",
-        headers={
-            "Content-Disposition": 'attachment; filename="photographs.zip"',
-            "Content-Length": str(size),
-        },
-    )
 
 
 @router.delete("/g/session", status_code=204)

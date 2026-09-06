@@ -135,38 +135,5 @@ export const guestApi = {
     }>(`/g/photos${qs ? `?${qs}` : ''}`, {}, session)
   },
 
-  /**
-   * Every matched photograph as one zip.
-   *
-   * Fetched rather than linked, because the endpoint authenticates on a header
-   * and an <a href> cannot send one. The trade is that the zip lands in memory
-   * before it reaches disk, so it gets its own long deadline: this is minutes
-   * of transfer on venue wifi, not the twenty seconds a read gets.
-   */
-  downloadAll: async (session: string): Promise<Blob> => {
-    const control = new AbortController()
-    const timer = setTimeout(() => control.abort(), 10 * 60_000)
-    try {
-      const res = await fetch(`${BASE}/g/download`, {
-        headers: { 'X-Guest-Session': session },
-        signal: control.signal,
-      })
-      if (!res.ok) {
-        const body = await res.json().catch(() => null)
-        throw new GuestError(
-          res.status,
-          body?.error?.code ?? 'UNKNOWN',
-          body?.error?.message ?? 'The download failed. Try again.',
-        )
-      }
-      return await res.blob()
-    } catch (e) {
-      if (e instanceof GuestError) throw e
-      throw new GuestError(0, 'NETWORK', 'The download stopped. Check your signal and try again.')
-    } finally {
-      clearTimeout(timer)
-    }
-  },
-
   deleteMe: (session: string) => request<void>('/g/session', { method: 'DELETE' }, session),
 }

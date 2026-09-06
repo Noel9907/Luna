@@ -26,7 +26,7 @@ export function GalleryScreen({
   totalCount: number
   hasMore: boolean
   onLoadMore: () => void
-  onDownloadAll: () => Promise<void>
+  onDownloadAll: (onProgress: (done: number, total: number) => void) => Promise<void>
   pendingCount: number
   onShowPending: () => void
   onPoll: () => void
@@ -34,7 +34,7 @@ export function GalleryScreen({
 }) {
   const [open, setOpen] = useState<number | null>(null)
   const [confirmDelete, setConfirmDelete] = useState(false)
-  const [zipping, setZipping] = useState(false)
+  const [saving, setSaving] = useState<{ done: number; total: number } | null>(null)
   const pollRef = useRef(onPoll)
   pollRef.current = onPoll
   const sentinel = useRef<HTMLDivElement | null>(null)
@@ -76,9 +76,17 @@ export function GalleryScreen({
     return () => io.disconnect()
   }, [hasMore])
 
-  // Close the lightbox with the hardware back button rather than leaving the page.
+  /*
+   * Close the lightbox with the hardware back button rather than leaving the page.
+   *
+   * Depends on WHETHER it is open, not on which photograph. Keyed on the index
+   * this effect tore down on every Next and Previous, and its cleanup called
+   * history.back(), which fired popstate and closed the lightbox. Tapping Next
+   * appeared to do nothing except dismiss the picture.
+   */
+  const isOpen = open !== null
   useEffect(() => {
-    if (open === null) return
+    if (!isOpen) return
     const onPop = () => setOpen(null)
     window.history.pushState({ lightbox: true }, '')
     window.addEventListener('popstate', onPop)
@@ -86,7 +94,7 @@ export function GalleryScreen({
       window.removeEventListener('popstate', onPop)
       if (window.history.state?.lightbox) window.history.back()
     }
-  }, [open])
+  }, [isOpen])
 
   const current = open !== null ? photos[open] : null
 
@@ -102,17 +110,21 @@ export function GalleryScreen({
           {photos.length > 0 ? (
             <button
               className="g-dlbtn"
-              disabled={zipping}
+              disabled={saving !== null}
               onClick={async () => {
-                setZipping(true)
+                setSaving({ done: 0, total: 0 })
                 try {
-                  await onDownloadAll()
+                  await onDownloadAll((done, total) => setSaving({ done, total }))
                 } finally {
-                  setZipping(false)
+                  setSaving(null)
                 }
               }}
             >
-              {zipping ? 'Preparing' : 'Download all'}
+              {saving
+                ? saving.total
+                  ? `Saving ${saving.done} of ${saving.total}`
+                  : 'Preparing'
+                : 'Download all'}
             </button>
           ) : null}
         </div>

@@ -409,12 +409,13 @@
    gallery that may run to a thousand images. */
 .g-dlbtn {
   padding: 8px 14px;
-  border-radius: 999px;
-  border: 1px solid rgba(255, 255, 255, 0.28);
-  background: transparent;
-  color: inherit;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--line2);
+  background: var(--page);
+  color: var(--ink2);
   font: inherit;
   font-size: 14px;
+  font-weight: 600;
   white-space: nowrap;
   cursor: pointer;
 }

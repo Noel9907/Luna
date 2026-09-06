@@ -168,22 +168,50 @@ export function GuestApp() {
   }, [session, older])
 
   /*
-   * Hand the browser a blob and let it save. Revoked on the next tick rather
-   * than immediately: revoking before the click is processed cancels the very
-   * download it was created for.
+   * Save every photograph as a photograph, one file at a time.
+   *
+   * Not a zip: a phone has nowhere sensible to put one, and a guest who wants
+   * their pictures wants them in their gallery, not in an archive they then
+   * have to find an app to open.
+   *
+   * The gallery only holds the pages scrolled so far, so this walks the rest
+   * from the cursor first and downloads from the full list. A browser asks once
+   * whether to allow multiple downloads and then permits the whole run; the
+   * small gap between clicks is what keeps it from treating them as a flood and
+   * dropping the tail silently.
    */
-  const downloadAll = useCallback(async () => {
-    if (!session) return
-    const blob = await guestApi.downloadAll(session)
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = `${event?.event_name ?? 'photographs'}.zip`
-    document.body.appendChild(a)
-    a.click()
-    a.remove()
-    setTimeout(() => URL.revokeObjectURL(url), 60_000)
-  }, [session, event])
+  const downloadAll = useCallback(
+    async (onProgress: (done: number, total: number) => void) => {
+      if (!session) return
+
+      const all: GuestPhoto[] = [...photos]
+      const seen = new Set(all.map((p) => p.photo_id))
+      let next = older
+      while (next) {
+        const res = await guestApi.photos(session, { cursor: next })
+        for (const p of res.items) {
+          if (!seen.has(p.photo_id)) {
+            seen.add(p.photo_id)
+            all.push(p)
+          }
+        }
+        next = res.next_cursor
+      }
+
+      const name = (event?.event_name ?? 'photograph').replace(/[^\w -]+/g, '')
+      for (let i = 0; i < all.length; i++) {
+        const a = document.createElement('a')
+        a.href = all[i].full_url
+        a.download = `${name}-${String(i + 1).padStart(3, '0')}.jpg`
+        document.body.appendChild(a)
+        a.click()
+        a.remove()
+        onProgress(i + 1, all.length)
+        await new Promise((r) => setTimeout(r, 400))
+      }
+    },
+    [session, photos, older, event],
+  )
 
   function showPending() {
     setPhotos((prev) => {

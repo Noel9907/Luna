@@ -32,14 +32,14 @@ function applyTheme() {
     return
   }
   /*
-   * The guest gallery follows the phone and offers no toggle. Someone opens it
-   * once, for a few minutes, in a dim hall. A settings control would be noise.
+   * The guest gallery is always light, whatever the phone is set to.
+   *
+   * The photographs are the content and a white ground is how galleries and
+   * print present them; a dark surround tints how the work is judged. It also
+   * means the studio's gallery looks the same to every guest instead of
+   * depending on a setting none of them think about.
    */
-  const mq = window.matchMedia('(prefers-color-scheme: dark)')
-  const set = () =>
-    document.documentElement.setAttribute('data-theme', mq.matches ? 'dark' : 'light')
-  set()
-  mq.addEventListener('change', set)
+  document.documentElement.setAttribute('data-theme', 'light')
 }
 applyTheme()
 
