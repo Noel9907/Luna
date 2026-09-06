@@ -135,8 +135,8 @@ export function BrandingPage() {
                 <input
                   id="wm-size"
                   type="range"
-                  min={5}
-                  max={60}
+                  min={3}
+                  max={40}
                   value={Math.round(b.watermark_scale * 100)}
                   disabled={saving || !b.watermark_enabled}
                   onChange={(e) => setB({ ...b, watermark_scale: Number(e.target.value) / 100 })}

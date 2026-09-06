@@ -253,10 +253,9 @@ MIN_LOGO_EDGE = 80
 class BrandingIn(BaseModel):
     brand_color: str | None = Field(default=None, max_length=9)
     watermark_enabled: bool | None = None
-    # Bounded here, not just in the UI. Above ~0.6 the mark covers the
-    # photograph; below ~0.05 it is invisible at thumbnail size and the studio
-    # would think the feature was broken.
-    watermark_scale: float | None = Field(default=None, ge=0.05, le=0.6)
+    # Bounded here, not just in the UI. Past ~0.4 the mark competes with the
+    # photograph; below ~0.03 it is a smudge at any size.
+    watermark_scale: float | None = Field(default=None, ge=0.03, le=0.4)
     watermark_opacity: float | None = Field(default=None, ge=0.1, le=1.0)
 
 

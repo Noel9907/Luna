@@ -119,7 +119,7 @@ class Settings(BaseSettings):
     watermark_opacity: float = 0.75
     # Logo width as a fraction of the photograph's width, and how far its
     # baseline sits above the bottom edge as a fraction of height.
-    watermark_scale: float = 0.20
+    watermark_scale: float = 0.10
     watermark_margin: float = 0.035
 
     # Thumbnails are generated at index time, not on request. The guest gallery

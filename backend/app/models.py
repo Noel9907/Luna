@@ -80,7 +80,7 @@ class Studio(Base):
     # The watermark belongs to the studio, not the server. Two studios on one
     # box brand their own photographs and neither can reach the other's.
     watermark_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
-    watermark_scale: Mapped[float] = mapped_column(Float, default=0.20)
+    watermark_scale: Mapped[float] = mapped_column(Float, default=0.10)
     watermark_opacity: Mapped[float] = mapped_column(Float, default=0.75)
 
     # The negotiated face retention for this studio. Copied onto each event at
