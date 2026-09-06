@@ -71,3 +71,9 @@ design-system.html
 
 # Database dumps taken before destructive migrations. Local only.
 backend/backups/
+
+# Tunnel credentials staged for transfer. Secrets: never commit, and the
+# repository is public.
+handoff/
+.cloudflared/
+*.pem
