@@ -12,11 +12,22 @@
 # admin account with a generated password is created instead, and the password
 # is printed exactly once.
 
+param(
+    # The repository is private, so a bare clone on a machine that has never
+    # signed in will stop on a credential prompt. Pass a read-only fine-grained
+    # token instead of signing GitHub in on someone else's laptop:
+    #
+    #   -Token github_pat_xxx
+    #
+    # The token is used for the clone and never written to disk.
+    [string]$Token = '',
+    [string]$RepoUrl = 'https://github.com/Noel9907/Luna.git',
+    [string]$Hostname = 'https://frame.venusvision.in'
+)
+
 $ErrorActionPreference = 'Stop'
 
-$RepoUrl  = 'https://github.com/Noel9907/Luna.git'
-$Root     = Join-Path $env:USERPROFILE 'frame'
-$Hostname = 'https://frame.venusvision.in'
+$Root = Join-Path $env:USERPROFILE 'frame'
 
 function Say  ($m) { Write-Host "  $m" }
 function Good ($m) { Write-Host "  OK    $m" -ForegroundColor Green }
@@ -27,6 +38,25 @@ function Have ($exe) {
     $c = Get-Command $exe -ErrorAction SilentlyContinue
     if ($null -eq $c) { return $false }
     return $true
+}
+
+# Runs a native command quietly and returns its exit code.
+#
+# Not `cmd *> $null`. In PowerShell 5.1 redirecting a native program's stderr
+# wraps each line in a NativeCommandError, and with ErrorActionPreference set to
+# Stop that terminates the script. Docker prints warnings to stderr while
+# working perfectly, so the plain form aborts setup on a healthy machine and the
+# message blames the wrong thing entirely.
+function Quiet {
+    param([string]$Exe, [string[]]$Arguments)
+    $prev = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        & $Exe @Arguments 2>&1 | Out-Null
+        return $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $prev
+    }
 }
 
 Write-Host ""
@@ -72,8 +102,7 @@ if ($missing.Count -gt 0) {
 # Docker Desktop can be installed but not started, which fails differently and
 # more confusingly than not being installed at all.
 Say "checking Docker is actually running"
-docker info *> $null
-if (-not $?) {
+if ((Quiet 'docker' @('info')) -ne 0) {
     Bad "Docker Desktop is installed but not running."
     Say "Start Docker Desktop, wait for the whale icon to stop animating, rerun this."
     Say "If it refuses to start, virtualization is probably off in the BIOS."
@@ -85,15 +114,27 @@ Good "docker is running"
 
 if (Test-Path (Join-Path $Root '.git')) {
     Say "updating existing checkout at $Root"
-    git -C $Root pull --ff-only
+    if ($Token) {
+        git -C $Root pull --ff-only ($RepoUrl -replace '^https://', "https://$Token@") main
+    } else {
+        git -C $Root pull --ff-only
+    }
     if (-not $?) { Bad "git pull failed"; exit 1 }
 } else {
     Say "cloning into $Root"
-    git clone $RepoUrl $Root
+    $cloneUrl = $RepoUrl
+    if ($Token) { $cloneUrl = $RepoUrl -replace '^https://', "https://$Token@" }
+    git clone $cloneUrl $Root
     if (-not $?) {
-        Bad "clone failed. If the repository is private you need to sign in first:"
-        Say "  winget install --id GitHub.cli -e   then   gh auth login"
+        Bad "clone failed."
+        Say "This repository is private. Create a read-only fine-grained token at"
+        Say "github.com/settings/tokens, then rerun with:  -Token github_pat_xxx"
         exit 1
+    }
+    if ($Token) {
+        # The token would otherwise sit in .git/config on his machine forever.
+        git -C $Root remote set-url origin $RepoUrl
+        Say "clone token cleared from git config"
     }
 }
 Good "code is in $Root"
@@ -192,8 +233,9 @@ if (-not $dbUp) { Bad "docker compose failed"; exit 1 }
 Say "waiting for postgres to accept connections"
 $ready = $false
 foreach ($i in 1..60) {
-    docker exec frame-db pg_isready -U frame *> $null
-    if ($?) { $ready = $true; break }
+    if ((Quiet 'docker' @('exec', 'frame-db', 'pg_isready', '-U', 'frame')) -eq 0) {
+        $ready = $true; break
+    }
     Start-Sleep -Seconds 2
 }
 if (-not $ready) { Bad "postgres did not come up within 2 minutes"; exit 1 }
