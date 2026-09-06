@@ -386,3 +386,14 @@
     transform: rotate(360deg);
   }
 }
+
+/* The paging sentinel. Given real height so it can actually enter the
+   viewport; a zero-height element never triggers the observer on some
+   mobile browsers. */
+.g-more {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 0 40px;
+  min-height: 64px;
+}

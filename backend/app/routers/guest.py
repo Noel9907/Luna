@@ -199,6 +199,14 @@ def guest_photos(
     db = ctx.db
     storage = get_storage()
 
+    # "<timestamp>|<photo id>". Split rather than validated: a malformed cursor
+    # is treated as no cursor, which shows the first page again instead of
+    # failing. A guest cannot fix a 400 here.
+    cursor_ts: str | None = None
+    cursor_id: str | None = None
+    if cursor and "|" in cursor:
+        cursor_ts, _, cursor_id = cursor.partition("|")
+
     rows = db.execute(
         text(
             """
@@ -211,13 +219,25 @@ def guest_photos(
                -- appears only in an IS NULL test.
                AND (CAST(:after AS timestamptz) IS NULL
                     OR m.created_at > CAST(:after AS timestamptz))
-               AND (CAST(:cursor AS timestamptz) IS NULL
-                    OR m.created_at < CAST(:cursor AS timestamptz))
-             ORDER BY m.created_at DESC
+               -- Keyset on (created_at, photo_id), NOT on created_at alone.
+               -- The catch-up search writes every one of a guest's matches in
+               -- one transaction, so they all share a timestamp; paging on it
+               -- alone asks for rows strictly older than a value every row has,
+               -- returns nothing, and silently caps the gallery at one page.
+               AND (CAST(:cursor_ts AS timestamptz) IS NULL
+                    OR (m.created_at, p.id)
+                        < (CAST(:cursor_ts AS timestamptz), CAST(:cursor_id AS uuid)))
+             ORDER BY m.created_at DESC, p.id DESC
              LIMIT :limit
             """
         ),
-        {"gs": ctx.session_id, "after": after, "cursor": cursor, "limit": limit},
+        {
+            "gs": ctx.session_id,
+            "after": after,
+            "cursor_ts": cursor_ts,
+            "cursor_id": cursor_id,
+            "limit": limit,
+        },
     ).all()
 
     totals = db.execute(
@@ -259,7 +279,10 @@ def guest_photos(
 
     return {
         "items": items,
-        "next_cursor": rows[-1][5].isoformat() if len(rows) == limit else None,
+        # Carries the tiebreaker too, or the next page cannot be located.
+        "next_cursor": (
+            f"{rows[-1][5].isoformat()}|{rows[-1][0]}" if len(rows) == limit else None
+        ),
         "latest_cursor": (newest or datetime.now(timezone.utc)).isoformat(),
         "total_count": total_count,
     }

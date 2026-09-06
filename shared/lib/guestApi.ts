@@ -114,14 +114,26 @@ export const guestApi = {
     return request<{ matched_count: number }>('/g/selfie', { method: 'POST', body: form }, session)
   },
 
-  /** A plain database read on the server. No model, no cost, safe to poll. */
-  photos: (session: string, after?: string) =>
-    request<{
+  /**
+   * A plain database read on the server. No model, no cost, safe to poll.
+   *
+   * Two directions, and they are not the same request. `after` asks for
+   * photographs newer than a cursor, which is the twenty-second poll. `cursor`
+   * asks for older ones, which is scrolling back through a gallery that may
+   * run to a thousand images.
+   */
+  photos: (session: string, opts: { after?: string; cursor?: string } = {}) => {
+    const q = new URLSearchParams()
+    if (opts.after) q.set('after', opts.after)
+    if (opts.cursor) q.set('cursor', opts.cursor)
+    const qs = q.toString()
+    return request<{
       items: GuestPhoto[]
       next_cursor: string | null
       latest_cursor: string
       total_count: number
-    }>(`/g/photos${after ? `?after=${encodeURIComponent(after)}` : ''}`, {}, session),
+    }>(`/g/photos${qs ? `?${qs}` : ''}`, {}, session)
+  },
 
   deleteMe: (session: string) => request<void>('/g/session', { method: 'DELETE' }, session),
 }

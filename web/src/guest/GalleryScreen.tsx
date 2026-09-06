@@ -11,6 +11,9 @@ export function GalleryScreen({
   eventName,
   studioName,
   photos,
+  totalCount,
+  hasMore,
+  onLoadMore,
   pendingCount,
   onShowPending,
   onPoll,
@@ -19,6 +22,9 @@ export function GalleryScreen({
   eventName: string
   studioName: string | null
   photos: GuestPhoto[]
+  totalCount: number
+  hasMore: boolean
+  onLoadMore: () => void
   pendingCount: number
   onShowPending: () => void
   onPoll: () => void
@@ -28,6 +34,9 @@ export function GalleryScreen({
   const [confirmDelete, setConfirmDelete] = useState(false)
   const pollRef = useRef(onPoll)
   pollRef.current = onPoll
+  const sentinel = useRef<HTMLDivElement | null>(null)
+  const moreRef = useRef(onLoadMore)
+  moreRef.current = onLoadMore
 
   useEffect(() => {
     const t = setInterval(() => pollRef.current(), POLL_MS)
@@ -41,6 +50,28 @@ export function GalleryScreen({
       document.removeEventListener('visibilitychange', onVisible)
     }
   }, [])
+
+  /*
+   * Infinite scroll, via a sentinel below the grid. rootMargin loads the next
+   * page while it is still a screen away, so the guest never watches a spinner.
+   *
+   * onLoadMore is held in a ref and the effect depends only on hasMore. Passing
+   * the callback itself would tear down and rebuild the observer on every
+   * render, and an observer that is re-created mid-scroll can miss the
+   * intersection entirely and simply stop paging.
+   */
+  useEffect(() => {
+    const el = sentinel.current
+    if (!el || !hasMore) return
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) moreRef.current()
+      },
+      { rootMargin: '600px' },
+    )
+    io.observe(el)
+    return () => io.disconnect()
+  }, [hasMore])
 
   // Close the lightbox with the hardware back button rather than leaving the page.
   useEffect(() => {
@@ -63,7 +94,7 @@ export function GalleryScreen({
           <div className="g-event">{eventName}</div>
           {studioName ? <div className="g-studio">{studioName}</div> : null}
         </div>
-        <div className="g-count tnum">{photos.length}</div>
+        <div className="g-count tnum">{totalCount || photos.length}</div>
       </header>
 
       {pendingCount > 0 ? (
@@ -97,6 +128,12 @@ export function GalleryScreen({
           ))}
         </div>
       )}
+
+      {hasMore ? (
+        <div ref={sentinel} className="g-more">
+          <div className="g-spinner" aria-label="Loading more photographs" />
+        </div>
+      ) : null}
 
       <footer className="g-foot">
         {confirmDelete ? (

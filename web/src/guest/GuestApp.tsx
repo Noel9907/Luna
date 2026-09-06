@@ -31,7 +31,11 @@ export function GuestApp() {
 
   const [photos, setPhotos] = useState<GuestPhoto[]>([])
   const [pending, setPending] = useState<GuestPhoto[]>([])
+  const [total, setTotal] = useState(0)
+  // Newest seen, for polling forward. Separate from `older`, which walks back.
   const cursor = useRef<string | undefined>(undefined)
+  const [older, setOlder] = useState<string | null>(null)
+  const loadingMore = useRef(false)
 
   /* Load the event, and skip straight to the gallery for a returning guest. */
   useEffect(() => {
@@ -49,6 +53,8 @@ export function GuestApp() {
           setSession(existing)
           const first = await guestApi.photos(existing)
           setPhotos(first.items)
+          setTotal(first.total_count)
+          setOlder(first.next_cursor)
           cursor.current = first.latest_cursor
           setStage('gallery')
         } else {
@@ -94,6 +100,8 @@ export function GuestApp() {
       await guestApi.submitSelfie(session, blob)
       const first = await guestApi.photos(session)
       setPhotos(first.items)
+      setTotal(first.total_count)
+      setOlder(first.next_cursor)
       cursor.current = first.latest_cursor
       setStage('gallery')
     } catch (e) {
@@ -119,7 +127,8 @@ export function GuestApp() {
   const poll = useCallback(async () => {
     if (!session) return
     try {
-      const res = await guestApi.photos(session, cursor.current)
+      const res = await guestApi.photos(session, { after: cursor.current })
+      setTotal(res.total_count)
       if (res.items.length) {
         cursor.current = res.latest_cursor
         setPending((prev) => {
@@ -131,6 +140,32 @@ export function GuestApp() {
       // A failed poll is not worth telling anyone about. The next one runs in 20s.
     }
   }, [session])
+
+  /*
+   * Walk backwards through the gallery. A guest at their own wedding can be
+   * in a thousand photographs, and the API returns sixty at a time, so
+   * without this they simply never see the rest.
+   *
+   * The ref guard matters: the scroll sentinel can fire several times before
+   * the first response lands, and each would page from the same cursor and
+   * append the same sixty photographs again.
+   */
+  const loadMore = useCallback(async () => {
+    if (!session || !older || loadingMore.current) return
+    loadingMore.current = true
+    try {
+      const res = await guestApi.photos(session, { cursor: older })
+      setPhotos((prev) => {
+        const seen = new Set(prev.map((p) => p.photo_id))
+        return [...prev, ...res.items.filter((p) => !seen.has(p.photo_id))]
+      })
+      setOlder(res.next_cursor)
+    } catch {
+      // Leave `older` as it was so scrolling again retries.
+    } finally {
+      loadingMore.current = false
+    }
+  }, [session, older])
 
   function showPending() {
     setPhotos((prev) => {
@@ -149,6 +184,8 @@ export function GuestApp() {
       setSession(null)
       setPhotos([])
       setPending([])
+      setTotal(0)
+      setOlder(null)
       cursor.current = undefined
       setStage('landing')
     }
@@ -230,6 +267,9 @@ export function GuestApp() {
       eventName={event?.event_name ?? ''}
       studioName={event?.branding.mode === 'studio' ? event.branding.studio_name : null}
       photos={photos}
+      totalCount={total}
+      hasMore={older !== null}
+      onLoadMore={loadMore}
       pendingCount={pending.length}
       onShowPending={showPending}
       onPoll={poll}
