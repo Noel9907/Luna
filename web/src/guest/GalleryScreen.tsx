@@ -93,11 +93,29 @@ export function GalleryScreen({
   return (
     <div className="g-gallery">
       <header className="g-head">
-        <div>
+        <div className="g-head__id">
           <div className="g-event">{eventName}</div>
           {studioName ? <div className="g-studio">{studioName}</div> : null}
         </div>
-        <div className="g-count tnum">{totalCount || photos.length}</div>
+        <div className="g-head__right">
+          <div className="g-count tnum">{totalCount || photos.length}</div>
+          {photos.length > 0 ? (
+            <button
+              className="g-dlbtn"
+              disabled={zipping}
+              onClick={async () => {
+                setZipping(true)
+                try {
+                  await onDownloadAll()
+                } finally {
+                  setZipping(false)
+                }
+              }}
+            >
+              {zipping ? 'Preparing' : 'Download all'}
+            </button>
+          ) : null}
+        </div>
       </header>
 
       {pendingCount > 0 ? (
@@ -135,26 +153,6 @@ export function GalleryScreen({
       {hasMore ? (
         <div ref={sentinel} className="g-more">
           <div className="g-spinner" aria-label="Loading more photographs" />
-        </div>
-      ) : null}
-
-      {photos.length > 0 ? (
-        <div className="g-dl">
-          <button
-            className="g-btn g-btn--pri"
-            disabled={zipping}
-            onClick={async () => {
-              setZipping(true)
-              try {
-                await onDownloadAll()
-              } finally {
-                setZipping(false)
-              }
-            }}
-          >
-            {zipping ? 'Preparing your photographs' : `Download all ${totalCount || photos.length}`}
-          </button>
-          <p className="g-note">Large. Use wifi if you can.</p>
         </div>
       ) : null}
 

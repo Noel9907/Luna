@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import signal
 import sys
+from functools import lru_cache
 import time
 from datetime import datetime, timedelta, timezone
 
@@ -29,7 +30,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.db import system_session, tenant_session
-from app.faces import get_engine
+from app.faces import MODELS, get_engine
 from app.matching import match_face_against_guests, upsert_matches
 from app.models import Face, Job, Photo
 
@@ -157,12 +158,93 @@ def make_thumbnail(image_bgr: np.ndarray) -> bytes:
         if scale < 1.0
         else image_bgr
     )
-    if s.watermark_text:
-        small = draw_watermark(small, s.watermark_text)
+    if watermark_enabled():
+        small = apply_watermark(small)
     ok, buf = cv2.imencode(".jpg", small, [int(cv2.IMWRITE_JPEG_QUALITY), s.thumb_quality])
     if not ok:
         raise ValueError("THUMBNAIL_FAILED")
     return buf.tobytes()
+
+
+@lru_cache(maxsize=2)
+def _logo_bgra(path: str) -> np.ndarray | None:
+    """
+    The studio mark, loaded once and cropped to its own ink.
+
+    Cropping matters: an exported logo is usually mostly empty canvas, and
+    scaling to "20% of the photograph" would otherwise size the padding rather
+    than the mark, leaving it far smaller than asked for. This one is 1360x765
+    on disk and 657x468 of actual content.
+    """
+    img = cv2.imread(str(MODELS.parent / path), cv2.IMREAD_UNCHANGED)
+    if img is None:
+        print(f"  watermark logo not found at {path}, falling back to text", flush=True)
+        return None
+    if img.shape[2] == 3:  # no alpha: treat it as fully opaque
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2BGRA)
+    ys, xs = np.where(img[:, :, 3] > 8)
+    if len(xs) == 0:
+        return None
+    return img[ys.min() : ys.max() + 1, xs.min() : xs.max() + 1]
+
+
+def overlay_logo(image_bgr: np.ndarray, logo: np.ndarray) -> np.ndarray:
+    """
+    Alpha-composite the mark along the bottom edge, centred.
+
+    A drop shadow goes down first. The logo is grey and purple, which vanishes
+    against a dark suit or an unlit hall; the shadow gives it an edge to sit
+    against without turning the mark into a solid box.
+    """
+    s = settings()
+    h, w = image_bgr.shape[:2]
+
+    lw = max(24, int(w * s.watermark_scale))
+    lh = max(12, round(lw * logo.shape[0] / logo.shape[1]))
+    if lw >= w or lh >= h:
+        return image_bgr
+
+    small = cv2.resize(logo, (lw, lh), interpolation=cv2.INTER_AREA)
+    x = (w - lw) // 2
+    y = h - lh - max(6, int(h * s.watermark_margin))
+    if y < 0:
+        return image_bgr
+
+    out = image_bgr.copy()
+    alpha = (small[:, :, 3:4].astype(np.float32) / 255.0) * s.watermark_opacity
+
+    # Shadow: the same shape, black, offset a little and blurred.
+    off = max(1, lh // 40)
+    sy, sx = y + off, x + off
+    if sy + lh <= h and sx + lw <= w:
+        # GaussianBlur drops a trailing length-1 axis, so put it back or the
+        # multiply below broadcasts against the three colour channels wrongly.
+        blur = cv2.GaussianBlur(alpha, (0, 0), max(1.0, lh / 30)) * 0.5
+        blur = blur.reshape(lh, lw, 1)
+        roi = out[sy : sy + lh, sx : sx + lw].astype(np.float32)
+        out[sy : sy + lh, sx : sx + lw] = (roi * (1.0 - blur)).astype(np.uint8)
+
+    roi = out[y : y + lh, x : x + lw].astype(np.float32)
+    rgb = small[:, :, :3].astype(np.float32)
+    out[y : y + lh, x : x + lw] = (rgb * alpha + roi * (1.0 - alpha)).astype(np.uint8)
+    return out
+
+
+def apply_watermark(image_bgr: np.ndarray) -> np.ndarray:
+    """Logo if one is configured, otherwise the text mark, otherwise untouched."""
+    s = settings()
+    if s.watermark_logo:
+        logo = _logo_bgra(s.watermark_logo)
+        if logo is not None:
+            return overlay_logo(image_bgr, logo)
+    if s.watermark_text:
+        return draw_watermark(image_bgr, s.watermark_text)
+    return image_bgr
+
+
+def watermark_enabled() -> bool:
+    s = settings()
+    return bool(s.watermark_logo or s.watermark_text)
 
 
 def draw_watermark(image_bgr: np.ndarray, text: str) -> np.ndarray:
@@ -195,7 +277,7 @@ def draw_watermark(image_bgr: np.ndarray, text: str) -> np.ndarray:
 
 def make_display(image_bgr: np.ndarray) -> bytes:
     """The full-size copy a guest opens, watermarked. The original is untouched."""
-    marked = draw_watermark(image_bgr, settings().watermark_text)
+    marked = apply_watermark(image_bgr)
     ok, buf = cv2.imencode(".jpg", marked, [int(cv2.IMWRITE_JPEG_QUALITY), 88])
     if not ok:
         raise ValueError("THUMBNAIL_FAILED")
@@ -257,7 +339,7 @@ def process(db: Session, job_id: str, event_id: str, photo_id: str) -> Photo:
 
     # A watermarked full-size copy, written beside the original rather than over
     # it, so the mark can be removed later without re-uploading anything.
-    if settings().watermark_text:
+    if watermark_enabled():
         storage.write(display_key_for(event_id, photo.id), make_display(img), "image/jpeg")
 
     found = engine.detect_and_embed(img)

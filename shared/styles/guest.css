@@ -398,14 +398,27 @@
   min-height: 64px;
 }
 
-.g-dl { padding: 20px 16px 4px; }
-.g-dl .g-btn { width: 100%; }
-.g-note {
-  margin: 8px 0 0;
-  font-size: 13px;
-  color: var(--g-dim, #8b8b93);
-  text-align: center;
+.g-head__id { min-width: 0; }
+.g-head__right {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
 }
+/* Sits in the header so it is visible without scrolling to the end of a
+   gallery that may run to a thousand images. */
+.g-dlbtn {
+  padding: 8px 14px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.28);
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  font-size: 14px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.g-dlbtn:disabled { opacity: 0.55; cursor: default; }
 .g-light__save {
   padding: 8px 16px;
   border-radius: 8px;

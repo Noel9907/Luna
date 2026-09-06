@@ -277,7 +277,7 @@ def guest_photos(
     # so this needs no column and no migration. Photographs indexed before the
     # setting was turned on have no such copy, so turning it on mid-event means
     # re-queueing them.
-    marked = bool(settings().watermark_text)
+    marked = bool(settings().watermark_logo or settings().watermark_text)
 
     items = [
         {
@@ -324,7 +324,7 @@ def guest_download_all(ctx: GuestCtx = Depends(guest_context)):
     """
     db = ctx.db
     storage = get_storage()
-    marked = bool(settings().watermark_text)
+    marked = bool(settings().watermark_logo or settings().watermark_text)
 
     rows = db.execute(
         text(

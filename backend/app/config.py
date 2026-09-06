@@ -112,8 +112,15 @@ class Settings(BaseSettings):
     # Applied at INDEX time, so it only affects photographs indexed after it is
     # set. Turning it on for an event already indexed means re-queueing those
     # photographs, or the full view will 404 for them.
+    # A PNG with transparency, relative to backend/. Takes precedence over
+    # watermark_text when both are set. Empty falls back to the text mark.
+    watermark_logo: str = ""
     watermark_text: str = ""
     watermark_opacity: float = 0.75
+    # Logo width as a fraction of the photograph's width, and how far its
+    # baseline sits above the bottom edge as a fraction of height.
+    watermark_scale: float = 0.20
+    watermark_margin: float = 0.035
 
     # Thumbnails are generated at index time, not on request. The guest gallery
     # is the one screen every guest sees, usually on venue wifi.
