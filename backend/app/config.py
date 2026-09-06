@@ -48,7 +48,7 @@ class Settings(BaseSettings):
     # ── where the apps live ───────────────────────────────────────────
     # The QR code encodes a guest URL, so this has to be right in production
     # or every printed QR at the venue points at localhost.
-    guest_base_url: str = "http://localhost:8000"
+    guest_base_url: str = "*"
 
     # `null` is not a mistake. The packaged desktop app loads its window from
     # file://, and Chromium sends the literal string "null" as the Origin for
@@ -60,7 +60,7 @@ class Settings(BaseSettings):
     # token in a header, never a cookie, so a hostile page in someone's browser
     # gains nothing by being allowed to send a request it has no token for.
     # CORS is not the security boundary; the token is.
-    cors_origins_raw: str = "http://localhost:5174,http://localhost:5175,file://,null"
+    cors_origins_raw: str = "*"
 
     @property
     def cors_origins(self) -> list[str]:
@@ -102,6 +102,18 @@ class Settings(BaseSettings):
     # enough that a crash costs minutes, long enough that a genuinely slow
     # photograph is not stolen out from under a working process.
     job_stale_minutes: int = 5
+
+    # ── watermark ─────────────────────────────────────────────────────
+    # Empty disables it entirely. When set, the text is burned into the
+    # thumbnail and into a separate full-size display copy at index time. The
+    # uploaded original is never modified, so turning this off restores clean
+    # images without re-uploading anything.
+    #
+    # Applied at INDEX time, so it only affects photographs indexed after it is
+    # set. Turning it on for an event already indexed means re-queueing those
+    # photographs, or the full view will 404 for them.
+    watermark_text: str = ""
+    watermark_opacity: float = 0.75
 
     # Thumbnails are generated at index time, not on request. The guest gallery
     # is the one screen every guest sees, usually on venue wifi.

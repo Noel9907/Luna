@@ -169,7 +169,12 @@ if (Test-Path $EnvFile) {
         'INDEX_MIN_BLUR=0.0',
         'FACE_BACKEND=auraface',
         '',
-        "JWT_SECRET=$jwt"
+        "JWT_SECRET=$jwt",
+        '',
+        '# Watermark, lower-left of every photograph. Empty = off. Applied at',
+        '# index time, so set it BEFORE uploading, not after.',
+        'WATERMARK_TEXT=',
+        'WATERMARK_OPACITY=0.75'
     )
     Set-Content -Path $EnvFile -Value $lines -Encoding utf8
     Good ".env written with a fresh JWT secret"

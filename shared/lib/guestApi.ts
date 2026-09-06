@@ -42,12 +42,40 @@ export function clearSession(qrToken: string) {
   localStorage.removeItem(sessionKey(qrToken))
 }
 
+/*
+ * Venue wifi and a phone on the edge of a cell both fail the same way: the
+ * request neither completes nor errors. Without a deadline `fetch` waits
+ * forever, the promise never settles, and the caller's `finally` never runs, so
+ * the button sits on "Looking for you" with nothing to retry and nothing shown.
+ * A stall has to become a normal error the guest can act on.
+ */
+const READ_TIMEOUT_MS = 20_000
+const UPLOAD_TIMEOUT_MS = 60_000
+
 async function request<T>(path: string, init: RequestInit = {}, session?: string): Promise<T> {
   const headers = new Headers(init.headers)
   if (session) headers.set('X-Guest-Session', session)
   if (init.body && typeof init.body === 'string') headers.set('Content-Type', 'application/json')
 
-  const res = await fetch(`${BASE}${path}`, { ...init, headers })
+  // Uploads get longer: a selfie on a weak uplink is slow but still working.
+  const ms = init.body instanceof FormData ? UPLOAD_TIMEOUT_MS : READ_TIMEOUT_MS
+  const control = new AbortController()
+  const timer = setTimeout(() => control.abort(), ms)
+
+  let res: Response
+  try {
+    res = await fetch(`${BASE}${path}`, { ...init, headers, signal: control.signal })
+  } catch (e) {
+    // AbortError and a dropped connection are the same thing to a guest.
+    throw new GuestError(
+      0,
+      (e as Error)?.name === 'AbortError' ? 'TIMEOUT' : 'NETWORK',
+      'The connection dropped. Check your signal and try again.',
+    )
+  } finally {
+    clearTimeout(timer)
+  }
+
   if (res.status === 204) return undefined as T
 
   const body = await res.json().catch(() => null)

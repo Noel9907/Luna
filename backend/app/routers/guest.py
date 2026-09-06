@@ -234,13 +234,22 @@ def guest_photos(
     total_count = totals[0] if totals else 0
     newest = totals[1] if totals else None
 
+    # When watermarking is on the worker wrote a marked copy beside the original,
+    # and that is what a guest is given. Keyed by convention rather than stored,
+    # so this needs no column and no migration. Photographs indexed before the
+    # setting was turned on have no such copy, so turning it on mid-event means
+    # re-queueing them.
+    marked = bool(settings().watermark_text)
+
     items = [
         {
             "photo_id": str(r[0]),
-            # The thumbnail is what the grid loads. The original is only
+            # The thumbnail is what the grid loads. The full image is only
             # fetched when a guest opens one photograph full screen.
             "thumbnail_url": storage.signed_get_url(r[1] or r[2]),
-            "full_url": storage.signed_get_url(r[2]),
+            "full_url": storage.signed_get_url(
+                f"events/{ctx.event_id}/display/{r[0]}.jpg" if marked else r[2]
+            ),
             "width": r[3],
             "height": r[4],
             "matched_at": r[5].isoformat(),

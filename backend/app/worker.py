@@ -157,7 +157,46 @@ def make_thumbnail(image_bgr: np.ndarray) -> bytes:
         if scale < 1.0
         else image_bgr
     )
+    if s.watermark_text:
+        small = draw_watermark(small, s.watermark_text)
     ok, buf = cv2.imencode(".jpg", small, [int(cv2.IMWRITE_JPEG_QUALITY), s.thumb_quality])
+    if not ok:
+        raise ValueError("THUMBNAIL_FAILED")
+    return buf.tobytes()
+
+
+def draw_watermark(image_bgr: np.ndarray, text: str) -> np.ndarray:
+    """
+    Burn the studio's mark into the lower left corner.
+
+    Sized from the image width rather than fixed, so it reads the same on a
+    640px thumbnail and a 4000px frame. Drawn twice, dark then light, because a
+    single colour disappears against either a white saree or a dark hall.
+    """
+    out = image_bgr.copy()
+    h, w = out.shape[:2]
+    # Tuned so the mark reads at roughly the same physical size on a 640px
+    # thumbnail and a 2400px frame. Smaller than this and it vanishes in the
+    # grid, which defeats the point of having it.
+    scale = max(0.5, w / 750)
+    weight = max(1, round(scale * 1.6))
+    margin = max(8, int(w * 0.025))
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    origin = (margin, h - margin)
+
+    cv2.putText(out, text, origin, font, scale, (0, 0, 0), weight + 2, cv2.LINE_AA)
+    cv2.putText(out, text, origin, font, scale, (255, 255, 255), weight, cv2.LINE_AA)
+
+    # Blended rather than drawn straight on, so it marks the photograph without
+    # competing with the faces in it.
+    a = settings().watermark_opacity
+    return cv2.addWeighted(out, a, image_bgr, 1.0 - a, 0.0)
+
+
+def make_display(image_bgr: np.ndarray) -> bytes:
+    """The full-size copy a guest opens, watermarked. The original is untouched."""
+    marked = draw_watermark(image_bgr, settings().watermark_text)
+    ok, buf = cv2.imencode(".jpg", marked, [int(cv2.IMWRITE_JPEG_QUALITY), 88])
     if not ok:
         raise ValueError("THUMBNAIL_FAILED")
     return buf.tobytes()
@@ -165,6 +204,10 @@ def make_thumbnail(image_bgr: np.ndarray) -> bytes:
 
 def thumb_key_for(event_id: str, photo_id: str) -> str:
     return f"events/{event_id}/thumbs/{photo_id}.jpg"
+
+
+def display_key_for(event_id: str, photo_id: str) -> str:
+    return f"events/{event_id}/display/{photo_id}.jpg"
 
 
 # ── processing ─────────────────────────────────────────────────────────
@@ -211,6 +254,11 @@ def process(db: Session, job_id: str, event_id: str, photo_id: str) -> Photo:
     thumb_key = thumb_key_for(event_id, photo.id)
     storage.write(thumb_key, make_thumbnail(img), "image/jpeg")
     photo.thumb_key = thumb_key
+
+    # A watermarked full-size copy, written beside the original rather than over
+    # it, so the mark can be removed later without re-uploading anything.
+    if settings().watermark_text:
+        storage.write(display_key_for(event_id, photo.id), make_display(img), "image/jpeg")
 
     found = engine.detect_and_embed(img)
 
